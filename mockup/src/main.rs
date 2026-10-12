@@ -387,12 +387,22 @@ fn side_line(text: &str, added: bool, old_side: bool, width: usize) -> Line<'sta
     };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
-    used += text.chars().count();
-    spans.push(
-        Span::styled(text.to_string(), Style::default().fg(fg))
-            .add_modifier(modifier)
-            .bg(base),
-    );
+    // Keep the leading indentation un-emphasised: only the text itself is
+    // struck through (removed) or underlined (added).
+    let lead_len = text.len() - text.trim_start().len();
+    let (lead, rest) = text.split_at(lead_len);
+    if !lead.is_empty() {
+        used += lead.chars().count();
+        spans.push(Span::styled(lead.to_string(), Style::default().bg(base)));
+    }
+    if !rest.is_empty() {
+        used += rest.chars().count();
+        spans.push(
+            Span::styled(rest.to_string(), Style::default().fg(fg))
+                .add_modifier(modifier)
+                .bg(base),
+        );
+    }
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used))).bg(base));
     Line::from(spans)
 }
@@ -623,6 +633,21 @@ fn push_run(
     }
 }
 
+/// A cell whose background is reset to the terminal default, used to trim the
+/// faint line tint so it covers only [first letter .. rail] (or the code end).
+#[derive(Clone, Copy)]
+struct Clear {
+    left: bool,
+    row: i32,
+    col: usize,
+}
+
+fn push_clear(clears: &mut Vec<Clear>, left: bool, row: i32, cols: impl Iterator<Item = usize>) {
+    for col in cols {
+        clears.push(Clear { left, row, col });
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_gutter(
     rows: &[DiffRow],
@@ -634,13 +659,14 @@ fn build_gutter(
     delta: i32,
     old_w: usize,
     new_w: usize,
-) -> (Vec<Line<'static>>, Vec<Ov>) {
+) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
     let width = GAP as usize;
     let new_texts = new_side_texts(rows);
     let old_texts = old_side_texts(rows);
     // Old panel text is prefixed by its right-aligned line number + a space.
     let old_off = old_texts.len().max(1).to_string().len() + 1;
     let mut ovs: Vec<Ov> = Vec::new();
+    let mut clears: Vec<Clear> = Vec::new();
     let mut cells: Vec<Vec<Cell>> = Vec::new();
     // Each block: its rows in the old view, and its rows in the new view.
     // Removed lines have an empty new-view range; added lines an empty old one.
@@ -750,6 +776,12 @@ fn build_gutter(
                 style.h,
                 color,
             );
+            // Trim the line tint to [first letter .. rail].
+            for r in left.0..left.1 {
+                let first_col = old_off + old_texts.get(r).map_or(0, |t| leading_ws(t));
+                push_clear(&mut clears, true, r as i32, old_off..first_col);
+                push_clear(&mut clears, true, r as i32, lc..old_w);
+            }
         } else if (left.0 as i32) < height {
             if left.0 >= 1 {
                 let end = old_texts
@@ -817,6 +849,17 @@ fn build_gutter(
                 color,
             });
             push_run(&mut ovs, false, c3row as i32, 0..rc, style.h, color);
+            // Trim the line tint to [first letter .. end of code].
+            for (i, r) in (rs..re).enumerate() {
+                let text = new_texts.get(r);
+                let first = text.map_or(0, |t| leading_ws(t));
+                let end = text
+                    .and_then(|t| last_non_space(t))
+                    .map_or(first, |e| e + 1);
+                let row = rs2 + i as i32;
+                push_clear(&mut clears, false, row, 0..first);
+                push_clear(&mut clears, false, row, end..new_w);
+            }
         } else if rs2 >= 0 && rs2 < height {
             let indent = new_texts.get(rs).map_or(0, |t| leading_ws(t));
             if indent >= 2 {
@@ -844,7 +887,11 @@ fn build_gutter(
             }
         }
     }
-    (cells.iter().map(|row| cells_to_line(row)).collect(), ovs)
+    (
+        cells.iter().map(|row| cells_to_line(row)).collect(),
+        ovs,
+        clears,
+    )
 }
 
 #[derive(Clone)]
@@ -911,7 +958,7 @@ fn ui(f: &mut Frame, rows: &[DiffRow], scroll: u16, opts: Opts) {
         new_body,
     );
 
-    let (gutter_lines, overlays) = build_gutter(
+    let (gutter_lines, overlays, clears) = build_gutter(
         rows,
         opts.end_top,
         opts.end_bot,
@@ -924,7 +971,7 @@ fn ui(f: &mut Frame, rows: &[DiffRow], scroll: u16, opts: Opts) {
     );
     f.render_widget(Paragraph::new(gutter_lines).scroll((scroll, 0)), gap_body);
 
-    draw_overlays(f, &overlays, old_body, new_body, scroll);
+    draw_overlays(f, &overlays, &clears, old_body, new_body, scroll);
 
     f.render_widget(Paragraph::new(HELP_MAIN).style(help_style()), help);
 }
@@ -935,21 +982,39 @@ fn paint(f: &mut Frame, x: u16, y: u16, ch: char, color: Color) {
     cell.set_fg(color);
 }
 
-/// Paint the rails, gap arrows and the horizontal bridges that join them to the
-/// gutter, directly into the panels.
-fn draw_overlays(f: &mut Frame, ovs: &[Ov], old_body: Rect, new_body: Rect, scroll: u16) {
-    for ov in ovs {
-        let body = if ov.left { old_body } else { new_body };
-        if body.width == 0 || body.height == 0 {
-            continue;
-        }
+/// Paint the rails, gap arrows and bridges into the panels, then reset the
+/// background outside [first letter .. rail] so the line tint is trimmed.
+fn draw_overlays(
+    f: &mut Frame,
+    ovs: &[Ov],
+    clears: &[Clear],
+    old_body: Rect,
+    new_body: Rect,
+    scroll: u16,
+) {
+    let row_of = |body: Rect, row: i32| -> Option<u16> {
         let top = body.y as i32;
         let bottom = (body.y + body.height) as i32;
-        let y = top + ov.row - scroll as i32;
-        if y < top || y >= bottom || ov.col >= body.width as usize {
+        let y = top + row - scroll as i32;
+        (y >= top && y < bottom).then_some(y as u16)
+    };
+    for ov in ovs {
+        let body = if ov.left { old_body } else { new_body };
+        if body.width == 0 || ov.col >= body.width as usize {
             continue;
         }
-        paint(f, body.x + ov.col as u16, y as u16, ov.ch, ov.color);
+        if let Some(y) = row_of(body, ov.row) {
+            paint(f, body.x + ov.col as u16, y, ov.ch, ov.color);
+        }
+    }
+    for c in clears {
+        let body = if c.left { old_body } else { new_body };
+        if body.width == 0 || c.col >= body.width as usize {
+            continue;
+        }
+        if let Some(y) = row_of(body, c.row) {
+            f.buffer_mut()[(body.x + c.col as u16, y)].set_bg(Color::Reset);
+        }
     }
 }
 

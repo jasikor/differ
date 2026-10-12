@@ -56,8 +56,12 @@ to revisit the look.
 ## Colors / spans
 
 - Removed = red, added = green, changed = blue; faint line tints.
-- Spans: removed bold + strike; added underline; changed strike (old) +
-  underline (new).
+- Spans: removed strike; added underline; changed strike (old) + underline
+  (new). The leading indentation is left un-emphasised — only the text itself
+  is struck/underlined.
+- The faint line tint is trimmed to a block: from the first non-space character
+  up to the rail (old panel) or to the end of the code (new panel), never the
+  leading indentation or the padding past the rail.
 
 ## Layout
 
