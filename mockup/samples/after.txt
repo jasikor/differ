@@ -16,6 +16,14 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 
+/// Heap entry used to order runnable tasks.
+#[derive(Debug, Clone)]
+struct Pending {
+    priority: i32,
+    sequence: u64,
+    name: String,
+}
+
 pub enum ScheduleError1 {
     /// Two tasks were registered under the same name.
     DuplicateTask(String),
