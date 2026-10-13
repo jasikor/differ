@@ -323,8 +323,16 @@ pub fn build_gutter(
                 style.h,
                 color,
             );
+            // Rectangular block: from the block's minimum indent (ignoring
+            // blank lines) out to the rail, on every row.
+            let min_first = (left.0..left.1)
+                .filter_map(|r| old_texts.get(r))
+                .filter(|t| t.chars().any(|c| !c.is_whitespace()))
+                .map(|t| leading_ws(t))
+                .min()
+                .unwrap_or(0);
+            let first_col = old_off + min_first;
             for r in left.0..left.1 {
-                let first_col = old_off + old_texts.get(r).map_or(0, |t| leading_ws(t));
                 push_clear(&mut clears, true, r as i32, old_off..first_col);
                 push_clear(&mut clears, true, r as i32, lc..old_w);
             }
@@ -407,15 +415,25 @@ pub fn build_gutter(
                 }
                 cells[c3row][width - 1] = glyph(style.vl, color);
             }
-            for (i, r) in (rs..re).enumerate() {
-                let text = new_texts.get(r);
-                let first = text.map_or(0, |t| leading_ws(t));
-                let end = text
-                    .and_then(|t| last_non_space(t))
-                    .map_or(first, |e| e + 1);
+            // A rectangular block: from the block's first column to its
+            // longest line's end, on every row (not a ragged per-line run).
+            // Blank lines don't count towards the left edge.
+            let min_first = (rs..re)
+                .filter_map(|r| new_texts.get(r))
+                .filter(|t| t.chars().any(|c| !c.is_whitespace()))
+                .map(|t| leading_ws(t))
+                .min()
+                .unwrap_or(0);
+            let max_end = (rs..re)
+                .filter_map(|r| new_texts.get(r))
+                .filter_map(|t| last_non_space(t))
+                .map(|e| e + 1)
+                .max()
+                .unwrap_or(0);
+            for i in 0..(re - rs) {
                 let row = rs2 + i as i32;
-                push_clear(&mut clears, false, row, 0..first);
-                push_clear(&mut clears, false, row, end..new_w);
+                push_clear(&mut clears, false, row, 0..min_first);
+                push_clear(&mut clears, false, row, max_end..new_w);
             }
         } else if rs2 >= 0 && rs2 < height {
             let indent = new_texts.get(rs).map_or(0, |t| leading_ws(t));
@@ -489,6 +507,46 @@ pub fn draw_overlays(
         }
         if let Some(y) = row_of(body, c.row) {
             f.buffer_mut()[(body.x + c.col as u16, y)].set_bg(Color::Reset);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DiffRow;
+
+    /// Tinted cells on the old side (code area only), for a gutter row.
+    fn old_tint(clears: &[Clear], row: i32, old_off: usize, width: usize) -> Vec<usize> {
+        (old_off..width)
+            .filter(|&c| {
+                !clears
+                    .iter()
+                    .any(|cl| cl.left && cl.row == row && cl.col == c)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn removed_block_is_rectangular() {
+        // A 2-line removed block indented by 4; a blank line must not pull the
+        // left edge to 0.
+        let rows = vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Del("    removed one".into()),
+            DiffRow::Del("    removed two".into()),
+            DiffRow::Del("".into()),
+            DiffRow::Ctx("b".into()),
+        ];
+        let opts = ViewOpts::default();
+        let (_lines, _ovs, clears) = build_gutter(&rows, &opts, 0, 40, 40);
+
+        // old_off = 2 (1-digit line numbers + space); indent 4 -> first = 6;
+        // rail = old_off + max_end(15) + 2 = 19.
+        for row in [1, 2, 3] {
+            let tint = old_tint(&clears, row, 2, 40);
+            assert_eq!(tint.first(), Some(&6), "row {row} left edge");
+            assert_eq!(tint.last(), Some(&17), "row {row} right edge");
         }
     }
 }
