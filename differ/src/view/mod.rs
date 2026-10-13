@@ -83,5 +83,5 @@ fn help_line(app: &App) -> String {
     } else {
         format!("   {}", app.message)
     };
-    format!(" {path}   j/k files  J/K scroll  ,/. offset  R reload  q quit{msg}")
+    format!(" {path}   j/k files  n/p hunk  J/K scroll  ,/. offset  R reload  q quit{msg}")
 }

@@ -67,6 +67,27 @@ impl App {
         self.files.get(self.selected).map(|f| f.path.as_str())
     }
 
+    /// Old-view row offsets where each change hunk begins.
+    pub fn hunk_offsets(&self) -> Vec<usize> {
+        model::hunk_offsets(&self.rows)
+    }
+
+    pub fn next_hunk(&mut self) {
+        let starts = self.hunk_offsets();
+        let cur = self.scroll as usize;
+        if let Some(&s) = starts.iter().find(|&&s| s > cur) {
+            self.scroll = s as u16;
+        }
+    }
+
+    pub fn prev_hunk(&mut self) {
+        let starts = self.hunk_offsets();
+        let cur = self.scroll as usize;
+        if let Some(&s) = starts.iter().rev().find(|&&s| s < cur) {
+            self.scroll = s as u16;
+        }
+    }
+
     fn load_diff(&mut self) {
         self.rows.clear();
         self.message.clear();

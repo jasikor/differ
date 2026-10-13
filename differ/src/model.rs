@@ -172,6 +172,24 @@ fn collapse_if_rewritten(o: &mut Segs, n: &mut Segs) {
     }
 }
 
+/// Old-view row offsets where each change hunk begins.
+pub fn hunk_offsets(rows: &[DiffRow]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut old = 0usize;
+    let mut prev_change = false;
+    for row in rows {
+        let is_change = !matches!(row, DiffRow::Ctx(_));
+        if is_change && !prev_change {
+            starts.push(old);
+        }
+        if !matches!(row, DiffRow::Ins(_)) {
+            old += 1;
+        }
+        prev_change = is_change;
+    }
+    starts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +217,18 @@ mod tests {
     fn replacement_pairs_into_chg() {
         let rows = diff_rows("a\nold line\nc\n", "a\nnew line\nc\n");
         assert!(rows.iter().any(|r| matches!(r, DiffRow::Chg(_, _))));
+    }
+
+    #[test]
+    fn hunk_offsets_finds_change_blocks() {
+        let rows = vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Del("b".into()),
+            DiffRow::Ins("B".into()),
+            DiffRow::Ctx("c".into()),
+            DiffRow::Chg("d".into(), "D".into()),
+            DiffRow::Ctx("e".into()),
+        ];
+        assert_eq!(hunk_offsets(&rows), vec![1, 3]);
     }
 }
