@@ -24,6 +24,11 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 4. **Layout:** `[ file list | old pane | gutter | new pane ]`; file list
    selected with keys; refresh on demand.
 
+## Status
+
+- Stage 1 (skeleton): **done** — workspace + `differ/` crate + `git::Repo`
+  (discover/status/contents) + placeholder UI.
+
 ## Stage 1 — Skeleton
 
 - Root `Cargo.toml` workspace (`resolver = "2"`, members `["mockup", "differ"]`).
