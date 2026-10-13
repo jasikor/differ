@@ -13,7 +13,7 @@ use ratatui::{
 use crate::model::{DiffRow, Rows};
 use crate::view::theme::{
     LineStyle, ADD_BOT, ADD_BOT_FLIP, ADD_TOP, ADD_TOP_FLIP, END_BOT, END_BOT_FLIP, END_TOP,
-    END_TOP_FLIP, GAP, LINE, RAIL, RAIL_ADDED, RAIL_CHANGED, RAIL_REMOVED,
+    END_TOP_FLIP, GAP, LINE, MIN_GAP, NEW_MARGIN, RAIL, RAIL_ADDED, RAIL_CHANGED, RAIL_REMOVED,
 };
 
 #[derive(Clone, Copy)]
@@ -259,6 +259,29 @@ fn push_clear(clears: &mut Vec<Clear>, left: bool, row: i32, cols: impl Iterator
     }
 }
 
+/// The gutter width a diff needs: one lane per connector block (each block gets
+/// its own lane, so connectors never have to share one), plus the two edge
+/// columns. Small diffs keep a narrow gutter so the panes stay close together.
+pub fn gutter_width(rows: &[DiffRow]) -> u16 {
+    let mut blocks = 0u16;
+    let mut prev: Option<u8> = None;
+    for r in rows {
+        let kind = match r {
+            DiffRow::Ctx(_) => None,
+            DiffRow::Ins(_) => Some(0),
+            DiffRow::Del(_) => Some(1),
+            DiffRow::Chg(_, _) => Some(2),
+        };
+        if let Some(k) = kind {
+            if prev != Some(k) {
+                blocks += 1;
+            }
+        }
+        prev = kind;
+    }
+    (blocks + 2).clamp(MIN_GAP, GAP)
+}
+
 /// Build the gutter lines plus the panel overlays that must be painted on top.
 ///
 /// `pair_shift` = `old_top - new_top`: it is how far the new-side rows are
@@ -267,10 +290,11 @@ fn push_clear(clears: &mut Vec<Clear>, left: bool, row: i32, cols: impl Iterator
 pub fn build_gutter(
     rows: &[DiffRow],
     pair_shift: i32,
+    gap: u16,
     old_w: usize,
     new_w: usize,
 ) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
-    let width = GAP as usize;
+    let width = gap as usize;
     let style = LINE;
     let (end_top, end_bot) = (END_TOP, END_BOT);
     let new_texts = new_side_texts(rows);
@@ -282,6 +306,9 @@ pub fn build_gutter(
     let mut cells: Vec<Vec<Cell>> = Vec::new();
     // Each block: its rows in the old view, and its rows in the new view.
     let mut blocks: Vec<(Rows, Rows)> = Vec::new();
+    // Whether each block starts a new hunk (a context line separates them).
+    let mut new_hunk: Vec<bool> = Vec::new();
+    let mut hunk_start = true;
     let mut right_idx = 0usize;
     let mut i = 0;
     while i < rows.len() {
@@ -289,6 +316,7 @@ pub fn build_gutter(
             DiffRow::Ctx(_) => {
                 cells.push(blank_cells(width));
                 right_idx += 1;
+                hunk_start = true;
                 i += 1;
             }
             DiffRow::Ins(_) => {
@@ -299,6 +327,8 @@ pub fn build_gutter(
                     i += 1;
                 }
                 blocks.push(((ls, ls), (rs, right_idx)));
+                new_hunk.push(hunk_start);
+                hunk_start = false;
             }
             DiffRow::Del(_) => {
                 let ls = cells.len();
@@ -308,6 +338,8 @@ pub fn build_gutter(
                     i += 1;
                 }
                 blocks.push(((ls, cells.len()), (boundary, boundary)));
+                new_hunk.push(hunk_start);
+                hunk_start = false;
             }
             DiffRow::Chg(_, _) => {
                 let ls = cells.len();
@@ -318,6 +350,8 @@ pub fn build_gutter(
                     i += 1;
                 }
                 blocks.push(((ls, cells.len()), (rs, right_idx)));
+                new_hunk.push(hunk_start);
+                hunk_start = false;
             }
         }
     }
@@ -330,12 +364,12 @@ pub fn build_gutter(
     }
     let height = cells.len() as i32;
 
-    // Work out how the connectors travel so lanes can be ordered to avoid
-    // crossings. Each block joins an old-side row to a new-side row; blocks are
-    // monotone top-to-bottom, so when the connectors all run the same way,
-    // assigning lanes in that direction's natural order keeps them disjoint.
+    // Connector endpoints, so lanes can be ordered to avoid crossings. Within a
+    // hunk (blocks are monotone top-to-bottom) assigning lanes in the travel
+    // direction's natural order keeps them disjoint. The direction is per hunk,
+    // and each hunk uses its own lane numbering.
+    let lanes = (width - 2).max(1);
     let mut conns: Vec<(usize, usize)> = Vec::with_capacity(blocks.len());
-    let mut going_up = 0i32;
     for &(left, (rs, re)) in &blocks {
         let added = left.0 == left.1;
         let removed = rs == re;
@@ -348,13 +382,25 @@ pub fn build_gutter(
         } else {
             false
         };
-        let (c0, c3) = connector_rows(left, rs, re, added, removed, flip, pair_shift, height);
-        if c3 < c0 {
-            going_up += 1;
-        }
-        conns.push((c0, c3));
+        conns.push(connector_rows(
+            left, rs, re, added, removed, flip, pair_shift, height,
+        ));
     }
-    let up = going_up * 2 > conns.len() as i32;
+    let mut spines = vec![1usize; blocks.len()];
+    let mut first = 0;
+    while first < blocks.len() {
+        let mut end = first + 1;
+        while end < blocks.len() && !new_hunk[end] {
+            end += 1;
+        }
+        let ups = (first..end).filter(|&k| conns[k].1 < conns[k].0).count();
+        let up = ups * 2 > end - first;
+        for (offset, spine) in spines[first..end].iter_mut().enumerate() {
+            let idx = (first + offset) % lanes;
+            *spine = if up { 1 + idx } else { lanes - idx };
+        }
+        first = end;
+    }
 
     for (lane, (left, (rs, re))) in blocks.into_iter().enumerate() {
         if height == 0 {
@@ -383,16 +429,8 @@ pub fn build_gutter(
         } else {
             false
         };
-        // Lanes are ordered to match the connectors' travel direction: down-going
-        // connectors fill lanes right-to-left, up-going ones left-to-right. With
-        // monotone blocks this keeps each connector inside the lanes of the ones
-        // before it, so connectors of different kinds never cross (while
-        // scrolling can flip the direction, it flips for all of them together).
-        let spine = if up {
-            1 + (lane % (width - 2))
-        } else {
-            (width - 2) - (lane % (width - 2))
-        };
+        // Lane order comes from the pre-pass (per-hunk, by travel direction).
+        let spine = spines[lane];
         let (c0row, c3row) = conns[lane];
         connector_edge(&mut cells, c0row, c3row, spine, color);
         link(&mut cells, c0row, 0, LEFT | RIGHT, color);
@@ -494,51 +532,41 @@ pub fn build_gutter(
                 .map(|t| leading_ws(t))
                 .min()
                 .unwrap_or(0);
-            // The rail hugs the start of the code. With >=2 columns of indent
-            // there is room inside the panel; otherwise (top-level lines) fall
-            // back to the gutter's right edge so we never overwrite the code.
-            if start >= 2 && start - 2 < new_w {
-                let rc = start - 2;
-                for r in rs2..re2 {
-                    if r >= 0 && r < height {
-                        ovs.push(Ov {
-                            left: false,
-                            col: rc,
-                            row: r,
-                            ch: RAIL,
-                            color,
-                        });
-                    }
+            // The new pane indents its code by `NEW_MARGIN` (rail + space), so
+            // the rail sits at `start` and the code begins two columns later.
+            let rc = start;
+            for r in rs2..re2 {
+                if r >= 0 && r < height {
+                    ovs.push(Ov {
+                        left: false,
+                        col: rc,
+                        row: r,
+                        ch: RAIL,
+                        color,
+                    });
                 }
-                ovs.push(Ov {
-                    left: false,
-                    col: rc,
-                    row: c3row as i32,
-                    ch: style.vl,
-                    color,
-                });
-                push_run(&mut ovs, false, c3row as i32, 0..rc, style.h, color);
-            } else {
-                for r in rs2..re2 {
-                    if r >= 0 && r < height {
-                        cells[r as usize][width - 1] = glyph(RAIL, color);
-                    }
-                }
-                cells[c3row][width - 1] = glyph(style.vl, color);
             }
+            ovs.push(Ov {
+                left: false,
+                col: rc,
+                row: c3row as i32,
+                ch: style.vl,
+                color,
+            });
+            push_run(&mut ovs, false, c3row as i32, 0..rc, style.h, color);
             // A rectangular block: from the block's first column to its
             // longest line's end, on every row (not a ragged per-line run).
             // Blank lines don't count towards the left edge.
             let min_first = (rs..re)
                 .filter_map(|r| new_texts.get(r))
                 .filter(|t| t.chars().any(|c| !c.is_whitespace()))
-                .map(|t| leading_ws(t))
+                .map(|t| NEW_MARGIN + leading_ws(t))
                 .min()
                 .unwrap_or(0);
             let max_end = (rs..re)
                 .filter_map(|r| new_texts.get(r))
                 .filter_map(|t| last_non_space(t))
-                .map(|e| e + 1)
+                .map(|e| NEW_MARGIN + e + 1)
                 .max()
                 .unwrap_or(0);
             for i in 0..(re - rs) {
@@ -680,7 +708,7 @@ mod tests {
         rows.extend(rep(6, &|i| DiffRow::Ins(format!("tail{i}"))));
         rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
 
-        let (lines, _ovs, _clears) = build_gutter(&rows, 0, 40, 40);
+        let (lines, _ovs, _clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
         for (r, line) in lines.iter().enumerate() {
             for span in &line.spans {
                 assert_ne!(span.style.fg, Some(CROSS), "crossing on gutter row {r}");
@@ -707,7 +735,7 @@ mod tests {
         rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
 
         for shift in -22i32..=22 {
-            let (lines, _ovs, _clears) = build_gutter(&rows, shift, 38, 38);
+            let (lines, _ovs, _clears) = build_gutter(&rows, shift, gutter_width(&rows), 38, 38);
             for (r, line) in lines.iter().enumerate() {
                 for span in &line.spans {
                     assert_ne!(
@@ -731,7 +759,7 @@ mod tests {
             DiffRow::Del("".into()),
             DiffRow::Ctx("b".into()),
         ];
-        let (_lines, _ovs, clears) = build_gutter(&rows, 0, 40, 40);
+        let (_lines, _ovs, clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
 
         // old_off = 2 (1-digit line numbers + space); indent 4 -> first = 6;
         // rail = old_off + max_end(15) + 2 = 19.

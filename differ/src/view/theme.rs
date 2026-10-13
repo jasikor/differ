@@ -2,8 +2,18 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Width of the inter-pane gutter.
+/// Width of the inter-pane gutter (the maximum; the actual width adapts to the
+/// number of connectors a diff needs).
 pub const GAP: u16 = 10;
+
+/// Columns each pane keeps clear of the code so the rail is never flush against
+/// the text: the old pane leaves one space before its (right) rail; the new pane
+/// reserves two columns (rail + space) at its left, indenting the code.
+pub const OLD_MARGIN: usize = 2;
+pub const NEW_MARGIN: usize = 2;
+
+/// Smallest inter-pane gutter (a single connector lane plus the two edges).
+pub const MIN_GAP: u16 = 3;
 
 // Backgrounds: faint tints of the line / row kind.
 pub const REMOVED_LINE: Color = Color::Rgb(0x2e, 0x22, 0x22);

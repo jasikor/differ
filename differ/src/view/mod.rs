@@ -15,7 +15,6 @@ use ratatui::{
 
 use crate::app::{App, Focus};
 use crate::model;
-use theme::GAP;
 
 /// Width of the file-list column.
 const FILES_W: u16 = 32;
@@ -23,11 +22,12 @@ const FILES_W: u16 = 32;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [main, help] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
+    let gap_w = gutter::gutter_width(&app.rows);
     let [files_col, old_ruler, old, gap, new, new_ruler] = Layout::horizontal([
         Constraint::Length(FILES_W),
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(GAP),
+        Constraint::Length(gap_w),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
@@ -100,7 +100,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ruler::draw(f, new_ruler_body, &new_kinds, new_top as u16);
 
     let (gutter_lines, ovs, clears) =
-        gutter::build_gutter(&app.rows, app.pair_shift(), old_w, new_w);
+        gutter::build_gutter(&app.rows, app.pair_shift(), gap_w, old_w, new_w);
     f.render_widget(
         Paragraph::new(gutter_lines).scroll((old_top as u16, 0)),
         gap_body,
