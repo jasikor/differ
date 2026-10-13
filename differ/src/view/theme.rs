@@ -1,6 +1,6 @@
 //! Colours, glyphs and line styles. Defaults frozen from `mockup/NOTES.md`.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// Width of the inter-pane gutter.
 pub const GAP: u16 = 10;
@@ -120,7 +120,6 @@ pub struct ViewOpts {
     pub rail_left: char,
     pub rail_right: char,
     pub line: LineStyle,
-    pub delta: i32,
 }
 
 impl Default for ViewOpts {
@@ -131,13 +130,19 @@ impl Default for ViewOpts {
             rail_left: RAILS[9],
             rail_right: RAILS[9],
             line: LINES[3].1,
-            delta: 0,
         }
     }
 }
 
 pub fn dim_style() -> Style {
     Style::new().fg(Color::Rgb(0x8c, 0x96, 0xa0))
+}
+
+/// Header style for the focused region.
+pub fn active_style() -> Style {
+    Style::new()
+        .fg(Color::Rgb(0xe6, 0xea, 0xef))
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn num_style() -> Style {
@@ -157,13 +162,19 @@ pub fn hunk_color(kind: crate::model::Kind) -> Color {
     }
 }
 
-/// Darken a colour (for ruler cells outside the viewport).
-pub fn dim(color: Color) -> Color {
-    match color {
+// Cursor: a solid block for the cursor cell; the cursor line gets one faint
+// tint (same in both panes).
+pub const CURSOR_ACTIVE: Color = Color::Rgb(0xff, 0xbf, 0x00);
+pub const CURSOR_INACTIVE: Color = Color::Rgb(0x4e, 0x57, 0x63);
+pub const CURSOR_LINE: Color = Color::Rgb(0x1b, 0x1f, 0x24);
+
+/// Lighten a colour by `d` per channel (keeps the hue of change tints).
+pub fn brighten(c: Color, d: u8) -> Color {
+    match c {
         Color::Rgb(r, g, b) => Color::Rgb(
-            (r as u32 * 45 / 100) as u8,
-            (g as u32 * 45 / 100) as u8,
-            (b as u32 * 45 / 100) as u8,
+            r.saturating_add(d),
+            g.saturating_add(d),
+            b.saturating_add(d),
         ),
         other => other,
     }

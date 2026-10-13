@@ -213,6 +213,37 @@ pub fn side_kinds(rows: &[DiffRow], old_side: bool) -> Vec<Option<Kind>> {
     out
 }
 
+/// Line pairing between the two sides, used to scroll them together.
+///
+/// `new_of_old[i]` is the new line that pairs with old line `i` (for a removed
+/// line, the new insertion point); `old_of_new[j]` is the dual. Scrolling one
+/// side then re-derives the other from its map, so the panes stay aligned as
+/// best they can without padding.
+pub fn line_maps(rows: &[DiffRow]) -> (Vec<usize>, Vec<usize>) {
+    let mut new_of_old = Vec::new();
+    let mut old_of_new = Vec::new();
+    let (mut oi, mut ni) = (0usize, 0usize);
+    for row in rows {
+        match row {
+            DiffRow::Ctx(_) | DiffRow::Chg(_, _) => {
+                new_of_old.push(ni);
+                old_of_new.push(oi);
+                oi += 1;
+                ni += 1;
+            }
+            DiffRow::Del(_) => {
+                new_of_old.push(ni);
+                oi += 1;
+            }
+            DiffRow::Ins(_) => {
+                old_of_new.push(oi);
+                ni += 1;
+            }
+        }
+    }
+    (new_of_old, old_of_new)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +284,18 @@ mod tests {
             DiffRow::Ctx("e".into()),
         ];
         assert_eq!(hunk_offsets(&rows), vec![1, 3]);
+    }
+
+    #[test]
+    fn line_maps_pair_across_blocks() {
+        let rows = vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Del("b".into()),
+            DiffRow::Ins("B".into()),
+            DiffRow::Ctx("c".into()),
+        ];
+        let (new_of_old, old_of_new) = line_maps(&rows);
+        assert_eq!(new_of_old, vec![0, 1, 2]);
+        assert_eq!(old_of_new, vec![0, 2, 2]);
     }
 }

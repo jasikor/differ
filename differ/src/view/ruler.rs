@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::model::Kind;
-use crate::view::theme::{dim, hunk_color, RULER_BRIGHT, RULER_DIM};
+use crate::view::theme::{hunk_color, RULER_BRIGHT, RULER_DIM};
 
 pub fn draw(f: &mut Frame, area: Rect, kinds: &[Option<Kind>], scroll: u16) {
     let h = area.height as usize;
@@ -42,10 +42,8 @@ pub fn draw(f: &mut Frame, area: Rect, kinds: &[Option<Kind>], scroll: u16) {
             let kind = kinds[s..e].iter().flatten().next().copied();
             let in_view = s < view_bot && e > view_top;
             match kind {
-                Some(k) => {
-                    let c = hunk_color(k);
-                    ('█', if in_view { c } else { dim(c) })
-                }
+                // Hunk colours are the same whether or not they're on screen.
+                Some(k) => ('█', hunk_color(k)),
                 None => ('│', if in_view { RULER_BRIGHT } else { RULER_DIM }),
             }
         };

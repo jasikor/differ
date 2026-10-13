@@ -1,7 +1,8 @@
 //! Commands: the actions, decoupled from the keys that trigger them.
 //!
 //! Adding/renaming a command happens here; wiring it to keys happens in
-//! `keymap.rs`. Neither touches the event loop.
+//! `keymap.rs`. Neither touches the event loop. Most commands act on whatever
+//! region has focus (file list vs. one of the two panes).
 
 use crate::app::App;
 
@@ -16,17 +17,18 @@ pub enum Outcome {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     Quit,
-    NextFile,
-    PrevFile,
-    NextHunk,
-    PrevHunk,
-    ScrollDown,
-    ScrollUp,
+    /// Move one step down in the focused region.
+    Down,
+    /// Move one step up in the focused region.
+    Up,
     PageDown,
     PageUp,
+    /// Jump to the top of the focused region.
     Top,
-    OffsetRight,
-    OffsetLeft,
+    NextHunk,
+    PrevHunk,
+    /// Cycle focus between the file list and the two panes.
+    ToggleFocus,
     Reload,
 }
 
@@ -34,17 +36,14 @@ impl Command {
     pub fn run(self, app: &mut App) -> Outcome {
         match self {
             Command::Quit => return Outcome::Quit,
-            Command::NextFile => app.move_selection(1),
-            Command::PrevFile => app.move_selection(-1),
+            Command::Down => app.down(),
+            Command::Up => app.up(),
+            Command::PageDown => app.page_down(),
+            Command::PageUp => app.page_up(),
+            Command::Top => app.top(),
             Command::NextHunk => app.next_hunk(),
             Command::PrevHunk => app.prev_hunk(),
-            Command::ScrollDown => app.scroll = app.scroll.saturating_add(1),
-            Command::ScrollUp => app.scroll = app.scroll.saturating_sub(1),
-            Command::PageDown => app.scroll = app.scroll.saturating_add(20),
-            Command::PageUp => app.scroll = app.scroll.saturating_sub(20),
-            Command::Top => app.scroll = 0,
-            Command::OffsetRight => app.opts.delta += 1,
-            Command::OffsetLeft => app.opts.delta -= 1,
+            Command::ToggleFocus => app.toggle_focus(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue

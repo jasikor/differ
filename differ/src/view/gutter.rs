@@ -188,14 +188,18 @@ fn push_clear(clears: &mut Vec<Clear>, left: bool, row: i32, cols: impl Iterator
 }
 
 /// Build the gutter lines plus the panel overlays that must be painted on top.
+///
+/// `pair_shift` = `old_top - new_top`: it is how far the new-side rows are
+/// offset relative to the old-view gutter grid, so a rail/arrow lands beside
+/// the matching new line.
 pub fn build_gutter(
     rows: &[DiffRow],
     opts: &ViewOpts,
+    pair_shift: i32,
     old_w: usize,
     new_w: usize,
 ) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
     let width = GAP as usize;
-    let delta = opts.delta;
     let style = opts.line;
     let (end_top, end_bot) = (opts.end_top, opts.end_bot);
     let (rail_left, rail_right) = (opts.rail_left, opts.rail_right);
@@ -248,10 +252,9 @@ pub fn build_gutter(
         }
     }
     // The grid is one row per *old* line, but new-side rails/arrows are placed
-    // at (new_index - delta). When the new side has more lines than the old
-    // (e.g. additions), those rows can fall past the end — pad the grid so they
-    // stay in range.
-    let new_rows = (new_texts.len() as i32 - delta).max(0) as usize;
+    // at (new_index + pair_shift). When that runs past the end, pad the grid so
+    // they stay in range.
+    let new_rows = (new_texts.len() as i32 + pair_shift).max(0) as usize;
     while cells.len() < new_rows {
         cells.push(blank_cells(width));
     }
@@ -269,8 +272,8 @@ pub fn build_gutter(
         } else {
             GUTTER_CHANGED
         };
-        let rs2 = rs as i32 - delta;
-        let re2 = re as i32 - delta;
+        let rs2 = rs as i32 + pair_shift;
+        let re2 = re as i32 + pair_shift;
         let c3 = rs2.clamp(0, height - 1) as usize;
         let spine = 1 + (lane % (width - 2));
         let (c0row, c3row) = if added {

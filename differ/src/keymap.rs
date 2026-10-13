@@ -37,20 +37,17 @@ impl Keymap {
         Keymap::new(vec![
             one(Char('q'), Command::Quit),
             one(Esc, Command::Quit),
-            one(Char('j'), Command::NextFile),
-            one(Down, Command::NextFile),
-            one(Char('k'), Command::PrevFile),
-            one(Up, Command::PrevFile),
+            one(Char('j'), Command::Down),
+            one(Down, Command::Down),
+            one(Char('k'), Command::Up),
+            one(Up, Command::Up),
+            one(Tab, Command::ToggleFocus),
             one(Char('n'), Command::NextHunk),
             one(Char('p'), Command::PrevHunk),
-            one(Char('J'), Command::ScrollDown),
-            one(Char('K'), Command::ScrollUp),
             one(PageDown, Command::PageDown),
             one(PageUp, Command::PageUp),
             one(Home, Command::Top),
             one(Char('g'), Command::Top),
-            one(Char('.'), Command::OffsetRight),
-            one(Char(','), Command::OffsetLeft),
             one(Char('R'), Command::Reload),
         ])
     }
@@ -103,10 +100,7 @@ mod tests {
     fn sequences_pend_then_run() {
         let mut km = Keymap::new(vec![
             (vec![KeyCode::Char('g'), KeyCode::Char('g')], Command::Top),
-            (
-                vec![KeyCode::Char('g'), KeyCode::Char('h')],
-                Command::PrevFile,
-            ),
+            (vec![KeyCode::Char('g'), KeyCode::Char('h')], Command::Up),
         ]);
         assert_eq!(km.feed(KeyCode::Char('g')), Resolution::Pending);
         assert_eq!(km.pending(), &[KeyCode::Char('g')]);
