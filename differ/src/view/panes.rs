@@ -116,6 +116,11 @@ fn side_line(text: &str, added: bool, old_side: bool, width: usize) -> Line<'sta
     Line::from(spans)
 }
 
+/// Width of the right-aligned line-number label for `total` lines.
+pub fn num_width(total: usize) -> usize {
+    total.max(1).to_string().len()
+}
+
 /// Build one pane's lines (line numbers included) from the diff rows.
 pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'static>> {
     let total = rows
@@ -126,7 +131,7 @@ pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'s
             DiffRow::Ins(_) => !old_side,
         })
         .count();
-    let num_w = total.max(1).to_string().len();
+    let num_w = num_width(total);
     let code_w = width.saturating_sub(num_w + 1 + if old_side { OLD_MARGIN } else { NEW_MARGIN });
     let num_style = crate::view::theme::num_style();
 
@@ -174,4 +179,56 @@ pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'s
         out.push(Line::from(spans));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn width(line: &Line) -> usize {
+        line.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    fn demo_rows() -> Vec<DiffRow> {
+        vec![
+            DiffRow::Ctx("abc".into()),
+            DiffRow::Del("    gone".into()),
+            DiffRow::Ins("    added".into()),
+            DiffRow::Chg("old".into(), "new".into()),
+        ]
+    }
+
+    #[test]
+    fn each_side_skips_the_other_sides_exclusive_rows() {
+        let rows = demo_rows();
+        // old: Ctx, Del, Chg (Ins dropped); new: Ctx, Ins, Chg (Del dropped).
+        assert_eq!(build_side(&rows, true, 20).len(), 3);
+        assert_eq!(build_side(&rows, false, 20).len(), 3);
+    }
+
+    #[test]
+    fn old_side_reserves_its_margin_the_new_side_indents() {
+        let rows = demo_rows();
+        let old = build_side(&rows, true, 20);
+        let new = build_side(&rows, false, 20);
+        // Both panes render exactly `width` columns once their margin is added.
+        assert_eq!(width(&old[0]), 20 - OLD_MARGIN);
+        assert_eq!(width(&new[0]), 20);
+        assert!(new[0].spans[0].content.starts_with(' '));
+    }
+
+    #[test]
+    fn long_lines_are_clipped_to_the_code_width() {
+        let rows = vec![DiffRow::Ctx("x".repeat(80))];
+        let old = build_side(&rows, true, 20);
+        assert_eq!(width(&old[0]), 20 - OLD_MARGIN);
+    }
+
+    #[test]
+    fn num_width_tracks_the_digit_count() {
+        assert_eq!(num_width(0), 1);
+        assert_eq!(num_width(9), 1);
+        assert_eq!(num_width(10), 2);
+        assert_eq!(num_width(999), 3);
+    }
 }

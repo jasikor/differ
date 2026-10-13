@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 use crate::model::{DiffRow, Rows};
+use crate::view::panes::num_width;
 use crate::view::theme::{
     LineStyle, ADD_BOT, ADD_BOT_FLIP, ADD_TOP, ADD_TOP_FLIP, END_BOT, END_BOT_FLIP, END_TOP,
     END_TOP_FLIP, GAP, LINE, MIN_GAP, NEW_MARGIN, RAIL, RAIL_ADDED, RAIL_CHANGED, RAIL_REMOVED,
@@ -122,37 +123,61 @@ fn connector_edge(cells: &mut [Vec<Cell>], c0row: usize, c3row: usize, spine: us
     }
 }
 
-/// The two rows a block's connector joins: the old-side attach (`c0row`) and the
-/// new-side attach (`c3row`).
-#[allow(clippy::too_many_arguments)]
-fn connector_rows(
-    left: Rows,
-    rs: usize,
-    re: usize,
+/// Per-block geometry shared by the connector pre-pass and the draw loop.
+#[derive(Clone, Copy)]
+struct Meta {
     added: bool,
     removed: bool,
+    rs2: i32,
+    re2: i32,
     flip: bool,
-    pair_shift: i32,
-    height: i32,
-) -> (usize, usize) {
+}
+
+fn meta_of(left: Rows, rs: usize, re: usize, pair_shift: i32) -> Meta {
     let rs2 = rs as i32 + pair_shift;
     let re2 = re as i32 + pair_shift;
-    if added {
-        let rail_end = rail_attach_row(left.0 as i32, rs2, re2 - 1, height);
-        let attach = if flip {
+    let removed = rs == re;
+    let added = left.0 == left.1;
+    // The two-row arrow points at the lines it marks. While the block sits at or
+    // below the gap the tall triangle is on the bottom row; once the view has
+    // scrolled past it the arrow flips (tall triangle up) using the other glyph
+    // pair. For a removed block the arrow is drawn on the new side, and vice
+    // versa, so the flip test compares the opposite side's coordinates.
+    let flip = if removed {
+        rs2 > left.0 as i32
+    } else if added {
+        re2 <= left.0 as i32
+    } else {
+        false
+    };
+    Meta {
+        added,
+        removed,
+        rs2,
+        re2,
+        flip,
+    }
+}
+
+/// The two rows a block's connector joins: the old-side attach (`c0row`) and the
+/// new-side attach (`c3row`).
+fn connector_rows(left: Rows, m: &Meta, height: i32) -> (usize, usize) {
+    if m.added {
+        let rail_end = rail_attach_row(left.0 as i32, m.rs2, m.re2 - 1, height);
+        let attach = if m.flip {
             left.0 as i32 - 1
         } else {
             left.0 as i32
         };
         (attach.max(0) as usize, rail_end)
-    } else if removed {
-        let rail_end = rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height);
-        let attach = if flip { rs2 - 1 } else { rs2 };
+    } else if m.removed {
+        let rail_end = rail_attach_row(m.rs2, left.0 as i32, left.1 as i32 - 1, height);
+        let attach = if m.flip { m.rs2 - 1 } else { m.rs2 };
         (rail_end, attach.clamp(0, height - 1) as usize)
     } else {
         (
-            rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height),
-            rail_attach_row(left.0 as i32, rs2, re2 - 1, height),
+            rail_attach_row(m.rs2, left.0 as i32, left.1 as i32 - 1, height),
+            rail_attach_row(left.0 as i32, m.rs2, m.re2 - 1, height),
         )
     }
 }
@@ -296,11 +321,10 @@ pub fn build_gutter(
 ) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
     let width = gap as usize;
     let style = LINE;
-    let (end_top, end_bot) = (END_TOP, END_BOT);
     let new_texts = new_side_texts(rows);
     let old_texts = old_side_texts(rows);
     // Old panel text is prefixed by its right-aligned line number + a space.
-    let old_off = old_texts.len().max(1).to_string().len() + 1;
+    let old_off = num_width(old_texts.len()) + 1;
     let mut ovs: Vec<Ov> = Vec::new();
     let mut clears: Vec<Clear> = Vec::new();
     let mut cells: Vec<Vec<Cell>> = Vec::new();
@@ -369,23 +393,15 @@ pub fn build_gutter(
     // direction's natural order keeps them disjoint. The direction is per hunk,
     // and each hunk uses its own lane numbering.
     let lanes = (width - 2).max(1);
-    let mut conns: Vec<(usize, usize)> = Vec::with_capacity(blocks.len());
-    for &(left, (rs, re)) in &blocks {
-        let added = left.0 == left.1;
-        let removed = rs == re;
-        let rs2 = rs as i32 + pair_shift;
-        let re2 = re as i32 + pair_shift;
-        let flip = if removed {
-            rs2 > left.0 as i32
-        } else if added {
-            re2 <= left.0 as i32
-        } else {
-            false
-        };
-        conns.push(connector_rows(
-            left, rs, re, added, removed, flip, pair_shift, height,
-        ));
-    }
+    let meta: Vec<Meta> = blocks
+        .iter()
+        .map(|&(left, (rs, re))| meta_of(left, rs, re, pair_shift))
+        .collect();
+    let conns: Vec<(usize, usize)> = blocks
+        .iter()
+        .zip(&meta)
+        .map(|(&(left, _), m)| connector_rows(left, m, height))
+        .collect();
     let mut spines = vec![1usize; blocks.len()];
     let mut first = 0;
     while first < blocks.len() {
@@ -457,32 +473,23 @@ pub fn build_gutter(
         }
     }
 
-    for (lane, (left, (rs, re))) in blocks.into_iter().enumerate() {
+    for (lane, (&(left, (rs, re)), m)) in blocks.iter().zip(&meta).enumerate() {
         if height == 0 {
             continue;
         }
-        let removed = rs == re;
-        let added = left.0 == left.1;
+        let Meta {
+            added,
+            removed,
+            rs2,
+            re2,
+            flip,
+        } = *m;
         let color = if removed {
             RAIL_REMOVED
         } else if added {
             RAIL_ADDED
         } else {
             RAIL_CHANGED
-        };
-        let rs2 = rs as i32 + pair_shift;
-        let re2 = re as i32 + pair_shift;
-        // The two-row arrow points at the lines it marks. They sit at or below
-        // the gap while the view is above them, so the tall triangle goes on the
-        // bottom and the bridge on that row. Once the view has scrolled past the
-        // block it sits above the gap, and the arrow flips (tall triangle up,
-        // bridge on the top row) using the alternate glyph pair.
-        let flip = if removed {
-            rs2 > left.0 as i32
-        } else if added {
-            re2 <= left.0 as i32
-        } else {
-            false
         };
         // Lane order comes from the pre-pass (per-hunk, by travel direction).
         let spine = spines[lane];
@@ -649,7 +656,7 @@ pub fn build_gutter(
             let (tall_glyph, short_glyph) = if flip {
                 (END_TOP_FLIP, END_BOT_FLIP)
             } else {
-                (end_bot, end_top)
+                (END_BOT, END_TOP)
             };
             let (tall_row, short_row) = if flip { (rs2 - 1, rs2) } else { (rs2, rs2 - 1) };
             if indent >= 2 {
@@ -891,6 +898,60 @@ mod tests {
             !rails.contains(&arrow.unwrap()),
             "removed arrow would cover the new rail"
         );
+    }
+
+    #[test]
+    fn removed_gap_arrow_flips_once_the_block_sits_above_the_gap() {
+        let rows = vec![
+            DiffRow::Ctx("fn f() {".into()),
+            DiffRow::Del("    gone".into()),
+            DiffRow::Ctx("    let b = 1;".into()),
+        ];
+        let glyphs = |shift: i32| -> Vec<char> {
+            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40);
+            let mut g: Vec<char> = ovs
+                .iter()
+                .filter(|o| {
+                    !o.left && matches!(o.ch, END_TOP | END_BOT | END_TOP_FLIP | END_BOT_FLIP)
+                })
+                .map(|o| o.ch)
+                .collect();
+            g.sort_unstable();
+            g
+        };
+        let mut want = vec![END_BOT, END_TOP];
+        want.sort_unstable();
+        assert_eq!(glyphs(0), want, "below the gap: default pair");
+        let mut want_flip = vec![END_BOT_FLIP, END_TOP_FLIP];
+        want_flip.sort_unstable();
+        assert_eq!(glyphs(2), want_flip, "above the gap: flipped pair");
+    }
+
+    #[test]
+    fn added_gap_arrow_flips_once_the_block_sits_above_the_gap() {
+        let rows = vec![
+            DiffRow::Ctx("fn f() {".into()),
+            DiffRow::Ins("    let x = 1;".into()),
+            DiffRow::Ctx("    let b = 2;".into()),
+        ];
+        let glyphs = |shift: i32| -> Vec<char> {
+            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40);
+            let mut g: Vec<char> = ovs
+                .iter()
+                .filter(|o| {
+                    o.left && matches!(o.ch, ADD_TOP | ADD_BOT | ADD_TOP_FLIP | ADD_BOT_FLIP)
+                })
+                .map(|o| o.ch)
+                .collect();
+            g.sort_unstable();
+            g
+        };
+        let mut want = vec![ADD_BOT, ADD_TOP];
+        want.sort_unstable();
+        assert_eq!(glyphs(0), want, "below the gap: default pair");
+        let mut want_flip = vec![ADD_BOT_FLIP, ADD_TOP_FLIP];
+        want_flip.sort_unstable();
+        assert_eq!(glyphs(-2), want_flip, "above the gap: flipped pair");
     }
 
     #[test]

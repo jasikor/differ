@@ -108,7 +108,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     gutter::draw_overlays(f, &ovs, &clears, old_body, new_body, old_top as u16);
 
     // Cursors (topmost, so they read clearly).
-    let old_off = old_kinds.len().max(1).to_string().len() + 1;
+    let old_off = panes::num_width(old_kinds.len()) + 1;
     draw_cursor(
         f,
         old_body,
