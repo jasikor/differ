@@ -402,6 +402,61 @@ pub fn build_gutter(
         first = end;
     }
 
+    // An old block's rail shares its column with a neighbouring added block's
+    // two-row gap arrow when they are adjacent (the arrow sits on the old
+    // block's last row). Nudge the rail one column right there so both stay
+    // visible instead of the arrow painting over the rail.
+    let mut rail_off = vec![0usize; blocks.len()];
+    for k in 0..blocks.len() {
+        let (left, _) = blocks[k];
+        if left.0 == left.1 {
+            continue; // added block: no old-side rail
+        }
+        for &(l2, _) in &blocks {
+            if l2.0 != l2.1 {
+                continue; // not an added block
+            }
+            let (top, bot) = (l2.0 as i32 - 1, l2.0 as i32);
+            let touches = |r: i32| r >= left.0 as i32 && r < left.1 as i32;
+            if touches(top) || touches(bot) {
+                rail_off[k] = 1;
+                break;
+            }
+        }
+    }
+
+    // Mirror of `rail_off` for the new side: a removed block's gap arrow (drawn
+    // on the new side) can share a column with a neighbour's new rail. Nudge
+    // that rail one column right so both stay visible.
+    let mut new_rail_off = vec![0usize; blocks.len()];
+    for k in 0..blocks.len() {
+        let (_, (rs, re)) = blocks[k];
+        if rs == re {
+            continue; // removed block: it has no new rail
+        }
+        let rc = (rs..re)
+            .filter_map(|r| new_texts.get(r))
+            .map(|t| leading_ws(t))
+            .min()
+            .unwrap_or(0);
+        for &(_, (rs2, re2)) in &blocks {
+            if rs2 != re2 {
+                continue; // not a removed block
+            }
+            let indent = new_texts.get(rs2).map_or(0, |t| leading_ws(t));
+            if indent < 2 {
+                continue; // arrow lands in the gutter, no in-pane collision
+            }
+            let col = indent - 2;
+            let (top, bot) = (rs2 as i32 + pair_shift - 1, rs2 as i32 + pair_shift);
+            let (lo, hi) = (rs as i32 + pair_shift, re as i32 + pair_shift);
+            if col == rc && top < hi && bot >= lo {
+                new_rail_off[k] = 1;
+                break;
+            }
+        }
+    }
+
     for (lane, (left, (rs, re))) in blocks.into_iter().enumerate() {
         if height == 0 {
             continue;
@@ -442,7 +497,19 @@ pub fn build_gutter(
                 .filter_map(|r| old_texts.get(r))
                 .filter_map(|t| last_non_space(t))
                 .max();
-            let lc = (old_off + end.map_or(0, |e| e + 1) + 1).min(old_w.saturating_sub(1));
+            let raw = old_off + end.map_or(0, |e| e + 1) + 1;
+            let lc = if rail_off[lane] == 1 {
+                if raw >= old_w.saturating_sub(1) {
+                    // Truncated: the arrow is pinned to the pane edge, so the
+                    // rail steps one column left instead (nudging right would
+                    // just clamp back onto the arrow).
+                    old_w.saturating_sub(2)
+                } else {
+                    (raw + 1).min(old_w.saturating_sub(1))
+                }
+            } else {
+                raw.min(old_w.saturating_sub(1))
+            };
             for row in (left.0 as i32)..(left.1 as i32) {
                 ovs.push(Ov {
                     left: true,
@@ -534,7 +601,7 @@ pub fn build_gutter(
                 .unwrap_or(0);
             // The new pane indents its code by `NEW_MARGIN` (rail + space), so
             // the rail sits at `start` and the code begins two columns later.
-            let rc = start;
+            let rc = (start + new_rail_off[lane]).min(new_w.saturating_sub(1));
             for r in rs2..re2 {
                 if r >= 0 && r < height {
                     ovs.push(Ov {
@@ -746,6 +813,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn add_arrow_does_not_cover_an_adjacent_rail() {
+        // A changed line immediately followed by an inserted line: the added
+        // block's gap arrow (old side) would otherwise land on the Chg block's
+        // rail. They must sit on different columns.
+        let rows = vec![
+            DiffRow::Ctx("fn main() {".into()),
+            DiffRow::Chg(
+                "    println!(\"sandbox\");".into(),
+                "    println!(\"sandbox: hello\");".into(),
+            ),
+            DiffRow::Ins("    let x = 1;".into()),
+            DiffRow::Ctx("}".into()),
+        ];
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let rail = ovs.iter().find(|o| o.left && o.ch == RAIL).map(|o| o.col);
+        let arrow = ovs
+            .iter()
+            .find(|o| o.left && (o.ch == ADD_TOP || o.ch == ADD_BOT))
+            .map(|o| o.col);
+        assert!(rail.is_some(), "expected an old-side rail");
+        assert!(arrow.is_some(), "expected an old-side add arrow");
+        assert_ne!(rail, arrow, "arrow would cover the rail");
+    }
+
+    #[test]
+    fn add_arrow_and_rail_stay_apart_when_truncated() {
+        // Narrow pane: the old line is truncated, so the rail clamps to the
+        // pane edge, where the added block's arrow also lands.
+        let rows = vec![
+            DiffRow::Ctx("fn f() {".into()),
+            DiffRow::Chg(
+                "    let value = a_really_long_expression_here;".into(),
+                "    let value = 1;".into(),
+            ),
+            DiffRow::Ins("    let extra = 2;".into()),
+            DiffRow::Ctx("}".into()),
+        ];
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 30, 30);
+        let rail = ovs.iter().find(|o| o.left && o.ch == RAIL).map(|o| o.col);
+        let arrow = ovs
+            .iter()
+            .find(|o| o.left && (o.ch == ADD_TOP || o.ch == ADD_BOT))
+            .map(|o| o.col);
+        assert!(rail.is_some(), "expected an old-side rail");
+        assert!(arrow.is_some(), "expected an old-side add arrow");
+        assert_ne!(rail, arrow, "truncated: arrow would cover the rail");
+    }
+
+    #[test]
+    fn removed_arrow_does_not_cover_an_adjacent_new_rail() {
+        // A removed line immediately followed by a changed line: the removed
+        // block's gap arrow (new side) would otherwise land on the Chg block's
+        // new rail.
+        let rows = vec![
+            DiffRow::Ctx("fn main() {".into()),
+            DiffRow::Del("    let gone = 1;".into()),
+            DiffRow::Chg("    let old = 2;".into(), "    let new = 3;".into()),
+            DiffRow::Ctx("}".into()),
+        ];
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let arrow = ovs
+            .iter()
+            .find(|o| !o.left && (o.ch == END_TOP || o.ch == END_BOT))
+            .map(|o| o.col);
+        let rails: Vec<usize> = ovs
+            .iter()
+            .filter(|o| !o.left && o.ch == RAIL)
+            .map(|o| o.col)
+            .collect();
+        assert!(arrow.is_some(), "expected a removed arrow on the new side");
+        assert!(!rails.is_empty(), "expected a new-side rail");
+        assert!(
+            !rails.contains(&arrow.unwrap()),
+            "removed arrow would cover the new rail"
+        );
     }
 
     #[test]
