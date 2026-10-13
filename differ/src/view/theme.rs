@@ -37,9 +37,9 @@ pub const GUTTER_CHANGED: Color = Color::Rgb(0x51, 0x89, 0xbf);
 // In-pane rails / connector lines / arrows: a dimmer copy of the `GUTTER_*`
 // marks, so the structure reads without pulling attention from the code. The
 // overview ruler keeps the brighter `GUTTER_*` colours (via `hunk_color`).
-pub const RAIL_REMOVED: Color = Color::Rgb(0x7e, 0x3d, 0x42);
-pub const RAIL_ADDED: Color = Color::Rgb(0x55, 0x6e, 0x44);
-pub const RAIL_CHANGED: Color = Color::Rgb(0x3d, 0x67, 0x8f);
+pub const RAIL_REMOVED: Color = Color::Rgb(0x4d, 0x25, 0x28);
+pub const RAIL_ADDED: Color = Color::Rgb(0x33, 0x42, 0x29);
+pub const RAIL_CHANGED: Color = Color::Rgb(0x25, 0x3e, 0x56);
 
 /// End markers for a removed block (drawn beside its first/last visible line).
 pub const END_TOP: char = '\u{1FB3D}';

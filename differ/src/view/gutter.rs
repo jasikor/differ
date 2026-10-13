@@ -59,7 +59,7 @@ const RIGHT: u8 = 8;
 
 /// Neutral colour for where two differently-coloured connectors cross, so
 /// neither line appears to bleed into the other.
-const CROSS: Color = Color::Rgb(0x6b, 0x72, 0x7b);
+const CROSS: Color = Color::Rgb(0x43, 0x47, 0x4d);
 
 /// OR `mask` into a cell's connector directions. The first colour wins; if a
 /// different colour also passes through, the cell is marked as a crossing.
