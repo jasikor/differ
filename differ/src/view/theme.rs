@@ -1,4 +1,4 @@
-//! Colours, glyphs and line styles. Defaults frozen from `mockup/NOTES.md`.
+//! Colours, glyphs and line styles. Defaults frozen from the original design.
 
 use ratatui::style::{Color, Modifier, Style};
 

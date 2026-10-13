@@ -1,6 +1,6 @@
 //! Diff model: aligned rows and intra-line segmentation, built on `similar`.
 //!
-//! Ported from the mockup (`mockup/src/main.rs`).
+//! Ported from the original design sketch.
 
 use similar::{ChangeTag, TextDiff};
 

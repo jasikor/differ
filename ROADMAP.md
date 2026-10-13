@@ -5,11 +5,10 @@
 A TUI that watches a git repo (typically edited by agents):
 
 - a left panel lists changed / added / deleted files;
-- selecting one shows its before/after in the two-pane differ view (the look
-  designed in `mockup/`);
+- selecting one shows its before/after in the two-pane differ view;
 - plus stage/unstage, commit and push.
 
-Manual refresh for the MVP. `mockup/` stays as the visual reference.
+Manual refresh for the MVP.
 
 ## Locked decisions
 
@@ -19,8 +18,7 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
    - *unstaged*: `index ↔ worktree` (`git show :<path>` vs the file)
    - *staged*: `HEAD ↔ index` (`git show HEAD:<path>` vs `git show :<path>`)
    - added file → before empty; deleted file → after empty.
-3. **Repo structure:** Cargo workspace at the root; members `mockup/` and a new
-   `differ/` crate.
+3. **Repo structure:** Cargo workspace at the root with a `differ/` crate.
 4. **Layout:** `[ file list | old pane | gutter | new pane ]`; file list
    selected with keys; refresh on demand.
 
@@ -54,7 +52,7 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 
 ## Stage 1 — Skeleton
 
-- Root `Cargo.toml` workspace (`resolver = "2"`, members `["mockup", "differ"]`).
+- Root `Cargo.toml` workspace (`resolver = "2"`, members `["differ"]`).
 - New `differ/` bin crate (deps: `ratatui`, `similar`).
 - `git.rs`: thin `Command` wrapper (`repo_root`, `status`, `contents`).
 - Module stubs; runnable stub UI.
@@ -67,7 +65,7 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 - Parse `git status --porcelain=v2` → file entries (staged + unstaged codes,
   rename handling).
 - Compute before/after per the semantics above.
-- Port the mockup renderer into `differ/src/view/` as a **pure** component:
+- Port the renderer into `differ/src/view/` as a **pure** component:
   `(old_text, new_text, view_opts) → widgets`, with no sample I/O.
 - Layout with the file list; `j`/`k` selects a file; the panes render it; `R`
   re-reads.
@@ -84,7 +82,7 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 
 ## Stage 4 — Bug pass
 
-- Fix the known mockup visual issues.
+- Fix the known visual issues.
 - Edge cases: added/deleted files, missing trailing newline, long lines
   (horizontal scroll), empty / no-change file, binary-ish files, large diffs,
   terminal resize.
@@ -103,7 +101,7 @@ differ/src/
   main.rs      entry, terminal setup, event loop
   app.rs       state (repo, files, selection, focus, mode, messages)
   git.rs       shell-out git: status, contents, stage, commit, push
-  model.rs     DiffRow, diff_rows(), intra_line()   (from mockup)
+  model.rs     DiffRow, diff_rows(), intra_line()
   view/        panes.rs, gutter.rs, files.rs, theme.rs
   input.rs     key handling
 ```
@@ -113,7 +111,7 @@ differ/src/
 - Git: run with `current_dir(repo_root)`; capture stdout/stderr; a non-zero
   exit is an error to surface, never a panic.
 - Async: `std::thread` + `mpsc`, polled via crossterm `event::poll` timeout.
-- Keep the renderer pure. Frozen visual defaults live in `mockup/NOTES.md`:
+- Keep the renderer pure. Frozen visual defaults:
   rails `│`, rounded lines, removed arrow `U+1FB3D`/`U+1FB5A`, added arrow
   `U+1FB48`/`U+1FB65`.
 
@@ -128,8 +126,6 @@ differ/src/
 1. Commit message: in-TUI line editor vs `$EDITOR`?
 2. v1 stage granularity: selected file only, or also stage-all?
 3. Sidebar: fixed width or toggleable?
-4. The mockup **bug/improvement list** — to fold into Stage 4 (kept as a TODO
-   below until collected).
 
 ## TODO — future features
 
@@ -137,7 +133,3 @@ differ/src/
   differing only in whitespace as unchanged, like `git diff -w` /
   `--ignore-all-space`. Feed a whitespace-insensitive comparison into
   `model::diff_rows` so the tints, hunk offsets and sync all follow the mode.
-
-## TODO — mockup bugs / improvements
-
-- (to be collected)

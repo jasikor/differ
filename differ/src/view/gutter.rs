@@ -1,7 +1,7 @@
 //! The inter-pane gutter: rails, connectors, gap arrows.
 //!
-//! Ported from the mockup. Rails live *inside* the panels (as overlays); the
-//! gutter grid holds only the stepping connector.
+//! Ported from the original design sketch. Rails live *inside* the panels (as
+//! overlays); the gutter grid holds only the stepping connector.
 
 use ratatui::{
     layout::Rect,
