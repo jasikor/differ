@@ -5,14 +5,15 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
     Frame,
 };
 
 use crate::model::{DiffRow, Rows};
 use crate::view::theme::{
-    LineStyle, ViewOpts, ADD_BOT, ADD_TOP, GAP, GUTTER_ADDED, GUTTER_CHANGED, GUTTER_REMOVED,
+    LineStyle, ADD_BOT, ADD_BOT_FLIP, ADD_TOP, ADD_TOP_FLIP, END_BOT, END_BOT_FLIP, END_TOP,
+    END_TOP_FLIP, GAP, LINE, RAIL, RAIL_ADDED, RAIL_CHANGED, RAIL_REMOVED,
 };
 
 #[derive(Clone, Copy)]
@@ -20,7 +21,6 @@ struct Cell {
     ch: char,
     fg: Option<Color>,
     bg: Option<Color>,
-    bold: bool,
 }
 
 impl Default for Cell {
@@ -29,7 +29,6 @@ impl Default for Cell {
             ch: ' ',
             fg: None,
             bg: None,
-            bold: false,
         }
     }
 }
@@ -42,7 +41,6 @@ fn glyph(ch: char, color: Color) -> Cell {
     Cell {
         ch,
         fg: Some(color),
-        bold: true,
         ..Cell::default()
     }
 }
@@ -92,9 +90,6 @@ fn cells_to_line(cells: &[Cell]) -> Line<'static> {
             }
             if let Some(bg) = c.bg {
                 span = span.bg(bg);
-            }
-            if c.bold {
-                span = span.add_modifier(Modifier::BOLD);
             }
             span
         })
@@ -194,15 +189,13 @@ fn push_clear(clears: &mut Vec<Clear>, left: bool, row: i32, cols: impl Iterator
 /// the matching new line.
 pub fn build_gutter(
     rows: &[DiffRow],
-    opts: &ViewOpts,
     pair_shift: i32,
     old_w: usize,
     new_w: usize,
 ) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
     let width = GAP as usize;
-    let style = opts.line;
-    let (end_top, end_bot) = (opts.end_top, opts.end_bot);
-    let (rail_left, rail_right) = (opts.rail_left, opts.rail_right);
+    let style = LINE;
+    let (end_top, end_bot) = (END_TOP, END_BOT);
     let new_texts = new_side_texts(rows);
     let old_texts = old_side_texts(rows);
     // Old panel text is prefixed by its right-aligned line number + a space.
@@ -266,22 +259,39 @@ pub fn build_gutter(
         let removed = rs == re;
         let added = left.0 == left.1;
         let color = if removed {
-            GUTTER_REMOVED
+            RAIL_REMOVED
         } else if added {
-            GUTTER_ADDED
+            RAIL_ADDED
         } else {
-            GUTTER_CHANGED
+            RAIL_CHANGED
         };
         let rs2 = rs as i32 + pair_shift;
         let re2 = re as i32 + pair_shift;
-        let c3 = rs2.clamp(0, height - 1) as usize;
+        // The two-row arrow points at the lines it marks. They sit at or below
+        // the gap while the view is above them, so the tall triangle goes on the
+        // bottom and the bridge on that row. Once the view has scrolled past the
+        // block it sits above the gap, and the arrow flips (tall triangle up,
+        // bridge on the top row) using the alternate glyph pair.
+        let flip = if removed {
+            rs2 > left.0 as i32
+        } else if added {
+            re2 <= left.0 as i32
+        } else {
+            false
+        };
         let spine = 1 + (lane % (width - 2));
         let (c0row, c3row) = if added {
             let rail_end = rail_attach_row(left.0 as i32, rs2, re2 - 1, height);
-            (left.0.saturating_sub(1), rail_end)
+            let attach = if flip {
+                left.0 as i32 - 1
+            } else {
+                left.0 as i32
+            };
+            (attach.max(0) as usize, rail_end)
         } else if removed {
             let rail_end = rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height);
-            (rail_end, c3)
+            let attach = if flip { rs2 - 1 } else { rs2 };
+            (rail_end, attach.clamp(0, height - 1) as usize)
         } else {
             (
                 rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height),
@@ -304,7 +314,7 @@ pub fn build_gutter(
                     left: true,
                     col: lc,
                     row,
-                    ch: rail_left,
+                    ch: RAIL,
                     color,
                 });
             }
@@ -337,32 +347,37 @@ pub fn build_gutter(
                 push_clear(&mut clears, true, r as i32, lc..old_w);
             }
         } else if (left.0 as i32) < height {
+            let (top_glyph, bot_glyph) = if flip {
+                (ADD_TOP_FLIP, ADD_BOT_FLIP)
+            } else {
+                (ADD_TOP, ADD_BOT)
+            };
             if left.0 >= 1 {
                 let end = old_texts
                     .get(left.0 - 1)
                     .and_then(|t| last_non_space(t))
                     .max(old_texts.get(left.0).and_then(|t| last_non_space(t)));
                 let col = (old_off + end.map_or(0, |e| e + 1) + 1).min(old_w.saturating_sub(1));
-                push_run(
-                    &mut ovs,
-                    true,
-                    (left.0 - 1) as i32,
-                    (col + 1)..old_w,
-                    style.h,
-                    color,
-                );
+                // The bridge runs along the tall triangle's row: the bottom row
+                // by default, the top row once the arrow has flipped.
+                let bridge_row = if flip {
+                    (left.0 - 1) as i32
+                } else {
+                    left.0 as i32
+                };
+                push_run(&mut ovs, true, bridge_row, (col + 1)..old_w, style.h, color);
                 ovs.push(Ov {
                     left: true,
                     col,
                     row: (left.0 - 1) as i32,
-                    ch: ADD_TOP,
+                    ch: top_glyph,
                     color,
                 });
                 ovs.push(Ov {
                     left: true,
                     col,
                     row: left.0 as i32,
-                    ch: ADD_BOT,
+                    ch: bot_glyph,
                     color,
                 });
             } else {
@@ -370,7 +385,7 @@ pub fn build_gutter(
                     left: true,
                     col: 0,
                     row: left.0 as i32,
-                    ch: ADD_BOT,
+                    ch: bot_glyph,
                     color,
                 });
             }
@@ -394,7 +409,7 @@ pub fn build_gutter(
                             left: false,
                             col: rc,
                             row: r,
-                            ch: rail_right,
+                            ch: RAIL,
                             color,
                         });
                     }
@@ -410,7 +425,7 @@ pub fn build_gutter(
             } else {
                 for r in rs2..re2 {
                     if r >= 0 && r < height {
-                        cells[r as usize][width - 1] = glyph(rail_right, color);
+                        cells[r as usize][width - 1] = glyph(RAIL, color);
                     }
                 }
                 cells[c3row][width - 1] = glyph(style.vl, color);
@@ -437,27 +452,38 @@ pub fn build_gutter(
             }
         } else if rs2 >= 0 && rs2 < height {
             let indent = new_texts.get(rs).map_or(0, |t| leading_ws(t));
+            // Tall triangle on the gap-facing side, short on the far side; the
+            // bridge always runs along the tall triangle's row. The flipped
+            // orientation uses its own glyph pair.
+            let (tall_glyph, short_glyph) = if flip {
+                (END_TOP_FLIP, END_BOT_FLIP)
+            } else {
+                (end_bot, end_top)
+            };
+            let (tall_row, short_row) = if flip { (rs2 - 1, rs2) } else { (rs2, rs2 - 1) };
             if indent >= 2 {
                 let col = indent - 2;
-                push_run(&mut ovs, false, rs2, 0..col, style.h, color);
+                push_run(&mut ovs, false, tall_row, 0..col, style.h, color);
                 ovs.push(Ov {
                     left: false,
                     col,
-                    row: rs2,
-                    ch: end_bot,
+                    row: tall_row,
+                    ch: tall_glyph,
                     color,
                 });
                 ovs.push(Ov {
                     left: false,
                     col,
-                    row: rs2 - 1,
-                    ch: end_top,
+                    row: short_row,
+                    ch: short_glyph,
                     color,
                 });
             } else {
-                cells[rs2 as usize][width - 1] = glyph(end_bot, color);
-                if rs2 >= 1 {
-                    cells[(rs2 - 1) as usize][width - 1] = glyph(end_top, color);
+                if tall_row >= 0 && tall_row < height {
+                    cells[tall_row as usize][width - 1] = glyph(tall_glyph, color);
+                }
+                if short_row >= 0 && short_row < height {
+                    cells[short_row as usize][width - 1] = glyph(short_glyph, color);
                 }
             }
         }
@@ -538,8 +564,7 @@ mod tests {
             DiffRow::Del("".into()),
             DiffRow::Ctx("b".into()),
         ];
-        let opts = ViewOpts::default();
-        let (_lines, _ovs, clears) = build_gutter(&rows, &opts, 0, 40, 40);
+        let (_lines, _ovs, clears) = build_gutter(&rows, 0, 40, 40);
 
         // old_off = 2 (1-digit line numbers + space); indent 4 -> first = 6;
         // rail = old_off + max_end(15) + 2 = 19.

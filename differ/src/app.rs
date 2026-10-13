@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use crate::git::{self, Repo};
 use crate::model::{self, DiffRow};
-use crate::view::theme::ViewOpts;
+
+/// Context lines kept above a jumped-to hunk.
+const HUNK_CONTEXT: usize = 3;
 
 /// Which region receives movement keys.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,12 +55,11 @@ pub struct App {
     old_of_new: Vec<usize>,
     /// Saved view position per file path.
     view_state: HashMap<String, ViewState>,
-    pub opts: ViewOpts,
     pub message: String,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(start: Option<&std::path::Path>) -> Self {
         let mut app = App {
             repo: None,
             files: Vec::new(),
@@ -74,10 +75,9 @@ impl App {
             new_of_old: Vec::new(),
             old_of_new: Vec::new(),
             view_state: HashMap::new(),
-            opts: ViewOpts::default(),
             message: String::new(),
         };
-        match Repo::discover() {
+        match Repo::discover_in(start) {
             Ok(repo) => {
                 app.repo = Some(repo);
                 app.refresh();
@@ -195,24 +195,35 @@ impl App {
 
     // ---- hunks ----
 
-    pub fn hunk_offsets(&self) -> Vec<usize> {
-        model::hunk_offsets(&self.rows)
+    pub fn hunks(&self) -> Vec<model::Hunk> {
+        model::hunks(&self.rows)
+    }
+
+    /// Row the cursor is on, for hunk navigation.
+    fn current_row(&self) -> usize {
+        model::old_row(&self.rows, self.old_cursor).min(model::new_row(&self.rows, self.new_cursor))
     }
 
     pub fn next_hunk(&mut self) {
-        let cur = self.old_cursor;
-        if let Some(&s) = self.hunk_offsets().iter().find(|&&s| s > cur) {
-            self.old_cursor = s.min(self.old_total().saturating_sub(1));
-            self.sync_from_old();
+        let cur = self.current_row();
+        if let Some(h) = self.hunks().into_iter().find(|h| h.row > cur) {
+            self.goto_hunk(&h);
         }
     }
 
     pub fn prev_hunk(&mut self) {
-        let cur = self.old_cursor;
-        if let Some(&s) = self.hunk_offsets().iter().rev().find(|&&s| s < cur) {
-            self.old_cursor = s.min(self.old_total().saturating_sub(1));
-            self.sync_from_old();
+        let cur = self.current_row();
+        if let Some(h) = self.hunks().into_iter().rev().find(|h| h.row < cur) {
+            self.goto_hunk(&h);
         }
+    }
+
+    /// Put a hunk's first row near the top, anchoring the cursor on whichever
+    /// side that row lives (an insertion starts on the new side).
+    fn goto_hunk(&mut self, h: &model::Hunk) {
+        let new_side = matches!(self.rows.get(h.row), Some(DiffRow::Ins(_)));
+        let line = if new_side { h.new } else { h.old };
+        self.frame(!new_side, line, HUNK_CONTEXT);
     }
 
     // ---- alignment ----
@@ -309,29 +320,48 @@ impl App {
 
     /// Put the first hunk a few lines down so there's some context above it.
     fn jump_to_first_hunk(&mut self) {
-        let (c, want) = match self.hunk_offsets().first().copied() {
-            Some(h) => (h.min(self.old_total().saturating_sub(1)), 3),
-            None => (0, 0),
+        if let Some(h) = self.hunks().into_iter().next() {
+            self.goto_hunk(&h);
+        } else {
+            self.frame(true, 0, 0);
+        }
+    }
+
+    /// Move the anchor cursor to `line` on the given side and frame it
+    /// `want_row` lines below the top, so a jumped-to hunk fills the window
+    /// instead of landing on the last visible row.
+    fn frame(&mut self, old_anchor: bool, line: usize, want_row: usize) {
+        let (t_line, o_line, t_total, o_total) = if old_anchor {
+            let t = line.min(self.old_total().saturating_sub(1));
+            let o = self
+                .new_of_old
+                .get(t)
+                .copied()
+                .unwrap_or(0)
+                .min(self.new_total().saturating_sub(1));
+            (t, o, self.old_total(), self.new_total())
+        } else {
+            let t = line.min(self.new_total().saturating_sub(1));
+            let o = self
+                .old_of_new
+                .get(t)
+                .copied()
+                .unwrap_or(0)
+                .min(self.old_total().saturating_sub(1));
+            (t, o, self.new_total(), self.old_total())
         };
-        self.old_cursor = c;
-        let p = self
-            .new_of_old
-            .get(c)
-            .copied()
-            .unwrap_or(0)
-            .min(self.new_total().saturating_sub(1));
-        self.new_cursor = p;
-        let vp = self.viewport.max(1);
-        let (old_top, new_top) = plan(
-            c,
-            p,
-            self.old_total(),
-            self.new_total(),
-            vp,
-            want.min(vp - 1),
-        );
-        self.old_top = old_top;
-        self.new_top = new_top;
+        let (t_top, o_top) = place_at(t_line, o_line, t_total, o_total, self.viewport, want_row);
+        if old_anchor {
+            self.old_cursor = t_line;
+            self.new_cursor = o_line;
+            self.old_top = t_top;
+            self.new_top = o_top;
+        } else {
+            self.new_cursor = t_line;
+            self.old_cursor = o_line;
+            self.new_top = t_top;
+            self.old_top = o_top;
+        }
     }
 }
 
@@ -384,6 +414,26 @@ fn plan(
     )
 }
 
+/// Place the anchor cursor on `want_row` (clamped only to the anchor pane's own
+/// scrolling range), then clamp the other pane independently. Used when jumping
+/// to a hunk, where framing wins over exact alignment: a block at the very end
+/// still opens with its first line near the top instead of being dragged to the
+/// bottom by the paired line (which may have no room).
+fn place_at(
+    c: usize,
+    p: usize,
+    t_total: usize,
+    o_total: usize,
+    viewport: usize,
+    want_row: usize,
+) -> (usize, usize) {
+    let vp = viewport.max(1);
+    let t_max = t_total.saturating_sub(vp);
+    let o_max = o_total.saturating_sub(vp);
+    let row = want_row.min(vp - 1).min(c).max(c.saturating_sub(t_max));
+    (c - row, p.saturating_sub(row).min(o_max))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +459,15 @@ mod tests {
         let (t, o) = plan(99, 96, 100, 97, 10, 9);
         assert_eq!((t, o), (90, 87));
         assert_eq!(99 - t, 96 - o);
+    }
+
+    #[test]
+    fn jumping_to_a_trailing_block_frames_it_at_the_top() {
+        // The old file is far longer than the new one, so the paired line of the
+        // first deleted line is the last new line and has no room at row 3.
+        // Framing still wins: the anchor cursor stays at row 3.
+        let (t, o) = place_at(87, 85, 144, 86, 38, 3);
+        assert_eq!(87 - t, 3);
+        assert_eq!(o, 86 - 38); // other pane pinned to its end
     }
 }

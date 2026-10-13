@@ -100,7 +100,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ruler::draw(f, new_ruler_body, &new_kinds, new_top as u16);
 
     let (gutter_lines, ovs, clears) =
-        gutter::build_gutter(&app.rows, &app.opts, app.pair_shift(), old_w, new_w);
+        gutter::build_gutter(&app.rows, app.pair_shift(), old_w, new_w);
     f.render_widget(
         Paragraph::new(gutter_lines).scroll((old_top as u16, 0)),
         gap_body,

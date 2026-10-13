@@ -24,25 +24,33 @@ pub const GUTTER_REMOVED: Color = Color::Rgb(0xa8, 0x51, 0x58);
 pub const GUTTER_ADDED: Color = Color::Rgb(0x72, 0x92, 0x5b);
 pub const GUTTER_CHANGED: Color = Color::Rgb(0x51, 0x89, 0xbf);
 
-/// End-marker pairs for removed blocks (top glyph, bottom glyph).
-pub const END_PAIRS: [(&str, char, char); 9] = [
-    ("U+1FB3D/U+1FB5A arrow", '\u{1FB3D}', '\u{1FB5A}'),
-    ("U+1FB3D/U+1FB58 arrow", '\u{1FB3D}', '\u{1FB58}'),
-    ("U+1FB3F/U+1FB5A arrow", '\u{1FB3F}', '\u{1FB5A}'),
-    ("U+E0BE/U+E0BC arrow", '\u{E0BE}', '\u{E0BC}'),
-    ("U+E0BA/U+E0B8 triangle", '\u{E0BA}', '\u{E0B8}'),
-    ("▀/▄ half blocks", '▀', '▄'),
-    ("▶/◀ arrows", '▶', '◀'),
-    ("▸/◂ arrows", '▸', '◂'),
-    ("╸/╴ half lines", '╸', '╴'),
-];
+// In-pane rails / connector lines / arrows: a dimmer copy of the `GUTTER_*`
+// marks, so the structure reads without pulling attention from the code. The
+// overview ruler keeps the brighter `GUTTER_*` colours (via `hunk_color`).
+pub const RAIL_REMOVED: Color = Color::Rgb(0x7e, 0x3d, 0x42);
+pub const RAIL_ADDED: Color = Color::Rgb(0x55, 0x6e, 0x44);
+pub const RAIL_CHANGED: Color = Color::Rgb(0x3d, 0x67, 0x8f);
+
+/// End markers for a removed block (drawn beside its first/last visible line).
+pub const END_TOP: char = '\u{1FB3D}';
+pub const END_BOT: char = '\u{1FB5A}';
+
+/// Removed-block arrow pair for the flipped orientation (block above the gap):
+/// tall triangle on top, short below.
+pub const END_TOP_FLIP: char = '\u{1FB3F}';
+pub const END_BOT_FLIP: char = '\u{1FB58}';
 
 /// Mirrored arrow pair for the added-lines gap, which sits on the before side.
 pub const ADD_TOP: char = '\u{1FB48}';
 pub const ADD_BOT: char = '\u{1FB65}';
 
-/// Rail glyphs. U+258x partial blocks are the classic rails.
-pub const RAILS: [char; 10] = ['▏', '▎', '▍', '▌', '▐', '▕', '█', '┃', '║', '│'];
+/// Added-block arrow pair for the flipped orientation (added lines above the
+/// gap): mirror of `END_TOP_FLIP`/`END_BOT_FLIP`.
+pub const ADD_TOP_FLIP: char = '\u{1FB4A}';
+pub const ADD_BOT_FLIP: char = '\u{1FB63}';
+
+/// The rail glyph: a thin vertical bar.
+pub const RAIL: char = '│';
 
 /// Connector line style: horizontal, vertical, and the four corners.
 #[derive(Clone, Copy)]
@@ -57,82 +65,17 @@ pub struct LineStyle {
     pub ur: char,
 }
 
-pub const LINES: [(&str, LineStyle); 4] = [
-    (
-        "light",
-        LineStyle {
-            h: '─',
-            v: '│',
-            vr: '├',
-            vl: '┤',
-            ul: '┘',
-            dr: '┌',
-            dl: '┐',
-            ur: '└',
-        },
-    ),
-    (
-        "heavy",
-        LineStyle {
-            h: '━',
-            v: '┃',
-            vr: '┣',
-            vl: '┫',
-            ul: '┛',
-            dr: '┏',
-            dl: '┓',
-            ur: '┗',
-        },
-    ),
-    (
-        "double",
-        LineStyle {
-            h: '═',
-            v: '║',
-            vr: '╠',
-            vl: '╣',
-            ul: '╝',
-            dr: '╔',
-            dl: '╗',
-            ur: '╚',
-        },
-    ),
-    (
-        "rounded",
-        LineStyle {
-            h: '─',
-            v: '│',
-            vr: '├',
-            vl: '┤',
-            ul: '╯',
-            dr: '╭',
-            dl: '╮',
-            ur: '╰',
-        },
-    ),
-];
-
-/// The frozen visual defaults.
-#[derive(Clone, Copy)]
-pub struct ViewOpts {
-    pub end_top: char,
-    pub end_bot: char,
-    pub rail_left: char,
-    pub rail_right: char,
-    pub line: LineStyle,
-}
-
-impl Default for ViewOpts {
-    fn default() -> Self {
-        ViewOpts {
-            end_top: END_PAIRS[0].1,
-            end_bot: END_PAIRS[0].2,
-            rail_left: RAILS[9],
-            rail_right: RAILS[9],
-            line: LINES[3].1,
-        }
-    }
-}
+/// The connector line style: rounded corners, thin strokes.
+pub const LINE: LineStyle = LineStyle {
+    h: '─',
+    v: '│',
+    vr: '├',
+    vl: '┤',
+    ul: '╯',
+    dr: '╭',
+    dl: '╮',
+    ur: '╰',
+};
 
 pub fn dim_style() -> Style {
     Style::new().fg(Color::Rgb(0x8c, 0x96, 0xa0))

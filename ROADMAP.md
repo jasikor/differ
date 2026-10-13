@@ -131,6 +131,13 @@ differ/src/
 4. The mockup **bug/improvement list** — to fold into Stage 4 (kept as a TODO
    below until collected).
 
+## TODO — future features
+
+- **Ignore whitespace:** an option (with a toggle key) that treats lines
+  differing only in whitespace as unchanged, like `git diff -w` /
+  `--ignore-all-space`. Feed a whitespace-insensitive comparison into
+  `model::diff_rows` so the tints, hunk offsets and sync all follow the mode.
+
 ## TODO — mockup bugs / improvements
 
 - (to be collected)

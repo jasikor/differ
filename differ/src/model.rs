@@ -172,22 +172,71 @@ fn collapse_if_rewritten(o: &mut Segs, n: &mut Segs) {
     }
 }
 
-/// Old-view row offsets where each change hunk begins.
-pub fn hunk_offsets(rows: &[DiffRow]) -> Vec<usize> {
-    let mut starts = Vec::new();
-    let mut old = 0usize;
-    let mut prev_change = false;
-    for row in rows {
-        let is_change = !matches!(row, DiffRow::Ctx(_));
-        if is_change && !prev_change {
-            starts.push(old);
-        }
-        if !matches!(row, DiffRow::Ins(_)) {
+/// A contiguous change block: the row it begins at, plus the old and new line
+/// index at that row.
+pub struct Hunk {
+    pub row: usize,
+    pub old: usize,
+    pub new: usize,
+}
+
+/// Contiguous change hunks in row order.
+pub fn hunks(rows: &[DiffRow]) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    let (mut old, mut new) = (0usize, 0usize);
+    let mut i = 0;
+    while i < rows.len() {
+        if let DiffRow::Ctx(_) = &rows[i] {
             old += 1;
+            new += 1;
+            i += 1;
+            continue;
         }
-        prev_change = is_change;
+        let hunk = Hunk { row: i, old, new };
+        while i < rows.len() && !matches!(rows[i], DiffRow::Ctx(_)) {
+            match &rows[i] {
+                DiffRow::Del(_) => old += 1,
+                DiffRow::Ins(_) => new += 1,
+                _ => {
+                    old += 1;
+                    new += 1;
+                }
+            }
+            i += 1;
+        }
+        out.push(hunk);
     }
-    starts
+    out
+}
+
+/// Row index of old line `l` (the last row if `l` is past the end).
+pub fn old_row(rows: &[DiffRow], l: usize) -> usize {
+    let mut old = 0;
+    for (i, r) in rows.iter().enumerate() {
+        if matches!(r, DiffRow::Ins(_)) {
+            continue;
+        }
+        if old == l {
+            return i;
+        }
+        old += 1;
+    }
+    rows.len().saturating_sub(1)
+}
+
+/// Row index of new line `l` (the last row if `l` is past the end).
+pub fn new_row(rows: &[DiffRow], l: usize) -> usize {
+    let mut new = 0;
+    for (i, r) in rows.iter().enumerate() {
+        if matches!(r, DiffRow::Del(_)) {
+            continue;
+        }
+        if new == l {
+            return i;
+        }
+        new += 1;
+    }
+    rows.len().saturating_sub(1)
 }
 
 /// Per-line change kind for one side (context lines map to `None`), used by the
@@ -274,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn hunk_offsets_finds_change_blocks() {
+    fn hunks_split_on_context() {
         let rows = vec![
             DiffRow::Ctx("a".into()),
             DiffRow::Del("b".into()),
@@ -283,7 +332,42 @@ mod tests {
             DiffRow::Chg("d".into(), "D".into()),
             DiffRow::Ctx("e".into()),
         ];
-        assert_eq!(hunk_offsets(&rows), vec![1, 3]);
+        let hs = hunks(&rows);
+        assert_eq!(hs.len(), 2);
+        assert_eq!((hs[0].row, hs[0].old, hs[0].new), (1, 1, 1));
+        assert_eq!((hs[1].row, hs[1].old, hs[1].new), (4, 3, 3));
+    }
+
+    #[test]
+    fn leading_insert_hunk_starts_on_the_new_side() {
+        let rows = vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Ins("X".into()),
+            DiffRow::Ins("Y".into()),
+            DiffRow::Ctx("b".into()),
+        ];
+        let hs = hunks(&rows);
+        assert_eq!((hs[0].row, hs[0].old, hs[0].new), (1, 1, 1));
+        assert!(matches!(rows[hs[0].row], DiffRow::Ins(_)));
+    }
+
+    #[test]
+    fn row_lookups_skip_the_other_side() {
+        let rows = vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Ins("X".into()),
+            DiffRow::Ctx("b".into()),
+            DiffRow::Del("c".into()),
+            DiffRow::Ctx("d".into()),
+        ];
+        // old lines: a(0) b(1) c(2) d(3); new lines: a(0) X(1) b(2) d(3)
+        assert_eq!(old_row(&rows, 0), 0);
+        assert_eq!(old_row(&rows, 1), 2);
+        assert_eq!(old_row(&rows, 2), 3);
+        assert_eq!(new_row(&rows, 0), 0);
+        assert_eq!(new_row(&rows, 1), 1);
+        assert_eq!(new_row(&rows, 2), 2);
+        assert_eq!(new_row(&rows, 3), 4);
     }
 
     #[test]

@@ -84,8 +84,9 @@ pub struct Repo {
 }
 
 impl Repo {
-    pub fn discover() -> Result<Self> {
-        let out = run(None, &["rev-parse", "--show-toplevel"])?;
+    /// Discover the repo containing `start`, or the current directory.
+    pub fn discover_in(start: Option<&Path>) -> Result<Self> {
+        let out = run(start, &["rev-parse", "--show-toplevel"])?;
         Ok(Repo {
             root: PathBuf::from(out.trim_end()),
         })
