@@ -21,6 +21,11 @@ struct Cell {
     ch: char,
     fg: Option<Color>,
     bg: Option<Color>,
+    /// Connector directions (bitmask of UP/DOWN/LEFT/RIGHT); 0 means the cell is
+    /// not part of a connector and `ch` is used as-is.
+    dirs: u8,
+    /// Set when connectors of different colours meet here (a crossing).
+    mixed: bool,
 }
 
 impl Default for Cell {
@@ -29,6 +34,8 @@ impl Default for Cell {
             ch: ' ',
             fg: None,
             bg: None,
+            dirs: 0,
+            mixed: false,
         }
     }
 }
@@ -45,38 +52,108 @@ fn glyph(ch: char, color: Color) -> Cell {
     }
 }
 
-/// Draw a stepped line in the gutter from (c0row, col 0) to (c3row, last col).
-fn connector_edge(
-    cells: &mut [Vec<Cell>],
-    c0row: usize,
-    c3row: usize,
-    spine: usize,
-    mark: Color,
-    style: LineStyle,
-) {
-    let right = cells[c0row].len() - 1;
+const UP: u8 = 1;
+const DOWN: u8 = 2;
+const LEFT: u8 = 4;
+const RIGHT: u8 = 8;
+
+/// Neutral colour for where two differently-coloured connectors cross, so
+/// neither line appears to bleed into the other.
+const CROSS: Color = Color::Rgb(0x6b, 0x72, 0x7b);
+
+/// OR `mask` into a cell's connector directions. The first colour wins; if a
+/// different colour also passes through, the cell is marked as a crossing.
+fn link(cells: &mut [Vec<Cell>], row: usize, col: usize, mask: u8, color: Color) {
+    if let Some(cell) = cells.get_mut(row).and_then(|r| r.get_mut(col)) {
+        cell.dirs |= mask;
+        match cell.fg {
+            None => cell.fg = Some(color),
+            Some(c) if c != color => cell.mixed = true,
+            _ => {}
+        }
+    }
+}
+
+/// The glyph for a set of connector directions.
+fn mask_glyph(mask: u8, style: LineStyle) -> char {
+    match mask {
+        m if m == UP | DOWN => style.v,
+        m if m == LEFT | RIGHT => style.h,
+        m if m == UP | LEFT => style.ul,
+        m if m == UP | RIGHT => style.ur,
+        m if m == DOWN | RIGHT => style.dr,
+        m if m == DOWN | LEFT => style.dl,
+        m if m == UP | DOWN | RIGHT => style.vr,
+        m if m == UP | DOWN | LEFT => style.vl,
+        m if m == LEFT | RIGHT | UP => '┴',
+        m if m == LEFT | RIGHT | DOWN => '┬',
+        m if m == UP | DOWN | LEFT | RIGHT => '┼',
+        _ => style.h,
+    }
+}
+
+/// Draw a stepped connector from (c0row, col 0) to (c3row, last col). Segments
+/// are accumulated as direction bits so crossings render as junctions instead
+/// of one connector chopping through another.
+fn connector_edge(cells: &mut [Vec<Cell>], c0row: usize, c3row: usize, spine: usize, mark: Color) {
+    let right = cells[0].len() - 1;
     if c0row == c3row {
-        for cell in cells[c0row].iter_mut().take(right).skip(1) {
-            *cell = glyph(style.h, mark);
+        for col in 1..right {
+            link(cells, c0row, col, LEFT | RIGHT, mark);
         }
         return;
     }
     let (top, bottom) = (c0row.min(c3row), c0row.max(c3row));
-    for row in cells.iter_mut().take(bottom + 1).skip(top) {
-        row[spine] = glyph(style.v, mark);
+    for row in (top + 1)..bottom {
+        link(cells, row, spine, UP | DOWN, mark);
     }
     if c3row < c0row {
-        cells[c0row][spine] = glyph(style.ul, mark);
-        cells[c3row][spine] = glyph(style.dr, mark);
+        link(cells, c0row, spine, UP | LEFT, mark);
+        link(cells, c3row, spine, DOWN | RIGHT, mark);
     } else {
-        cells[c0row][spine] = glyph(style.dl, mark);
-        cells[c3row][spine] = glyph(style.ur, mark);
+        link(cells, c0row, spine, DOWN | LEFT, mark);
+        link(cells, c3row, spine, UP | RIGHT, mark);
     }
-    for cell in cells[c0row].iter_mut().take(spine).skip(1) {
-        *cell = glyph(style.h, mark);
+    for col in 1..spine {
+        link(cells, c0row, col, LEFT | RIGHT, mark);
     }
-    for cell in cells[c3row].iter_mut().take(right).skip(spine + 1) {
-        *cell = glyph(style.h, mark);
+    for col in (spine + 1)..right {
+        link(cells, c3row, col, LEFT | RIGHT, mark);
+    }
+}
+
+/// The two rows a block's connector joins: the old-side attach (`c0row`) and the
+/// new-side attach (`c3row`).
+#[allow(clippy::too_many_arguments)]
+fn connector_rows(
+    left: Rows,
+    rs: usize,
+    re: usize,
+    added: bool,
+    removed: bool,
+    flip: bool,
+    pair_shift: i32,
+    height: i32,
+) -> (usize, usize) {
+    let rs2 = rs as i32 + pair_shift;
+    let re2 = re as i32 + pair_shift;
+    if added {
+        let rail_end = rail_attach_row(left.0 as i32, rs2, re2 - 1, height);
+        let attach = if flip {
+            left.0 as i32 - 1
+        } else {
+            left.0 as i32
+        };
+        (attach.max(0) as usize, rail_end)
+    } else if removed {
+        let rail_end = rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height);
+        let attach = if flip { rs2 - 1 } else { rs2 };
+        (rail_end, attach.clamp(0, height - 1) as usize)
+    } else {
+        (
+            rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height),
+            rail_attach_row(left.0 as i32, rs2, re2 - 1, height),
+        )
     }
 }
 
@@ -252,6 +329,33 @@ pub fn build_gutter(
         cells.push(blank_cells(width));
     }
     let height = cells.len() as i32;
+
+    // Work out how the connectors travel so lanes can be ordered to avoid
+    // crossings. Each block joins an old-side row to a new-side row; blocks are
+    // monotone top-to-bottom, so when the connectors all run the same way,
+    // assigning lanes in that direction's natural order keeps them disjoint.
+    let mut conns: Vec<(usize, usize)> = Vec::with_capacity(blocks.len());
+    let mut going_up = 0i32;
+    for &(left, (rs, re)) in &blocks {
+        let added = left.0 == left.1;
+        let removed = rs == re;
+        let rs2 = rs as i32 + pair_shift;
+        let re2 = re as i32 + pair_shift;
+        let flip = if removed {
+            rs2 > left.0 as i32
+        } else if added {
+            re2 <= left.0 as i32
+        } else {
+            false
+        };
+        let (c0, c3) = connector_rows(left, rs, re, added, removed, flip, pair_shift, height);
+        if c3 < c0 {
+            going_up += 1;
+        }
+        conns.push((c0, c3));
+    }
+    let up = going_up * 2 > conns.len() as i32;
+
     for (lane, (left, (rs, re))) in blocks.into_iter().enumerate() {
         if height == 0 {
             continue;
@@ -279,28 +383,20 @@ pub fn build_gutter(
         } else {
             false
         };
-        let spine = 1 + (lane % (width - 2));
-        let (c0row, c3row) = if added {
-            let rail_end = rail_attach_row(left.0 as i32, rs2, re2 - 1, height);
-            let attach = if flip {
-                left.0 as i32 - 1
-            } else {
-                left.0 as i32
-            };
-            (attach.max(0) as usize, rail_end)
-        } else if removed {
-            let rail_end = rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height);
-            let attach = if flip { rs2 - 1 } else { rs2 };
-            (rail_end, attach.clamp(0, height - 1) as usize)
+        // Lanes are ordered to match the connectors' travel direction: down-going
+        // connectors fill lanes right-to-left, up-going ones left-to-right. With
+        // monotone blocks this keeps each connector inside the lanes of the ones
+        // before it, so connectors of different kinds never cross (while
+        // scrolling can flip the direction, it flips for all of them together).
+        let spine = if up {
+            1 + (lane % (width - 2))
         } else {
-            (
-                rail_attach_row(rs2, left.0 as i32, left.1 as i32 - 1, height),
-                rail_attach_row(left.0 as i32, rs2, re2 - 1, height),
-            )
+            (width - 2) - (lane % (width - 2))
         };
-        connector_edge(&mut cells, c0row, c3row, spine, color, style);
-        cells[c0row][0] = glyph(style.h, color);
-        cells[c3row][width - 1] = glyph(style.h, color);
+        let (c0row, c3row) = conns[lane];
+        connector_edge(&mut cells, c0row, c3row, spine, color);
+        link(&mut cells, c0row, 0, LEFT | RIGHT, color);
+        link(&mut cells, c3row, width - 1, LEFT | RIGHT, color);
 
         // ---- old (left) panel ----
         if !added {
@@ -488,6 +584,16 @@ pub fn build_gutter(
             }
         }
     }
+    for row in cells.iter_mut() {
+        for cell in row.iter_mut() {
+            if cell.dirs != 0 {
+                cell.ch = mask_glyph(cell.dirs, style);
+                if cell.mixed {
+                    cell.fg = Some(CROSS);
+                }
+            }
+        }
+    }
     (
         cells.iter().map(|row| cells_to_line(row)).collect(),
         ovs,
@@ -551,6 +657,67 @@ mod tests {
                     .any(|cl| cl.left && cl.row == row && cl.col == c)
             })
             .collect()
+    }
+
+    #[test]
+    fn connectors_of_different_kinds_never_cross() {
+        // A hunk mixing inserts and changes (like a block whose body grew), so
+        // several connectors fan out between the same two rows. They must be
+        // routed in separate lanes and never meet (no CROSS-coloured cells).
+        let rep =
+            |n: usize, f: &dyn Fn(usize) -> DiffRow| -> Vec<DiffRow> { (0..n).map(f).collect() };
+        let mut rows = Vec::new();
+        rows.extend(rep(7, &|i| DiffRow::Ctx(format!("h{i}"))));
+        rows.extend(rep(15, &|i| DiffRow::Ins(format!("ins{i}"))));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("a{i}"))));
+        rows.push(DiffRow::Ins("w".into()));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("b{i}"))));
+        rows.push(DiffRow::Chg("c".into(), "C".into()));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("d{i}"))));
+        rows.push(DiffRow::Chg("e".into(), "E".into()));
+        rows.push(DiffRow::Chg("f".into(), "F".into()));
+        rows.extend(rep(3, &|i| DiffRow::Ctx(format!("g{i}"))));
+        rows.extend(rep(6, &|i| DiffRow::Ins(format!("tail{i}"))));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
+
+        let (lines, _ovs, _clears) = build_gutter(&rows, 0, 40, 40);
+        for (r, line) in lines.iter().enumerate() {
+            for span in &line.spans {
+                assert_ne!(span.style.fg, Some(CROSS), "crossing on gutter row {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn connectors_never_cross_while_scrolling() {
+        let rep =
+            |n: usize, f: &dyn Fn(usize) -> DiffRow| -> Vec<DiffRow> { (0..n).map(f).collect() };
+        let mut rows = Vec::new();
+        rows.extend(rep(7, &|i| DiffRow::Ctx(format!("h{i}"))));
+        rows.extend(rep(15, &|i| DiffRow::Ins(format!("ins{i}"))));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("a{i}"))));
+        rows.push(DiffRow::Ins("w".into()));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("b{i}"))));
+        rows.push(DiffRow::Chg("c".into(), "C".into()));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("d{i}"))));
+        rows.push(DiffRow::Chg("e".into(), "E".into()));
+        rows.push(DiffRow::Chg("f".into(), "F".into()));
+        rows.extend(rep(3, &|i| DiffRow::Ctx(format!("g{i}"))));
+        rows.extend(rep(6, &|i| DiffRow::Ins(format!("tail{i}"))));
+        rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
+
+        for shift in -22i32..=22 {
+            let (lines, _ovs, _clears) = build_gutter(&rows, shift, 38, 38);
+            for (r, line) in lines.iter().enumerate() {
+                for span in &line.spans {
+                    assert_ne!(
+                        span.style.fg,
+                        Some(CROSS),
+                        "crossing on gutter row {r} at shift {shift}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
