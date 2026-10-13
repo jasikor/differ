@@ -190,6 +190,29 @@ pub fn hunk_offsets(rows: &[DiffRow]) -> Vec<usize> {
     starts
 }
 
+/// Per-line change kind for one side (context lines map to `None`), used by the
+/// overview rulers.
+pub fn side_kinds(rows: &[DiffRow], old_side: bool) -> Vec<Option<Kind>> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            DiffRow::Ctx(_) => out.push(None),
+            DiffRow::Chg(_, _) => out.push(Some(Kind::Changed)),
+            DiffRow::Del(_) => {
+                if old_side {
+                    out.push(Some(Kind::Removed));
+                }
+            }
+            DiffRow::Ins(_) => {
+                if !old_side {
+                    out.push(Some(Kind::Added));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -31,12 +31,18 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 - Stage 2 (read + view): **done** — renderer ported to `differ/src/view/`,
   file list + two-pane diff, selection (`j`/`k`), before/after content,
   `R` refresh.
+- Stage 3 (mutations): **deferred** — lazygit already covers stage/commit/push;
+  `differ` focuses on *readable diffs*.
+- **Overview rulers:** done — a 1-column map per pane (outer edges) with hunk
+  cells coloured by kind and a viewport indicator, plus a `%`/line readout.
+- Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
+  data-driven, sequence-capable table.
 
-## Known issues (for the Stage 4 bug pass)
+## Known issues (for a future bug pass)
 
 - Busy/overlapping connectors on diffs with many hunks (lanes are limited).
 - The old-side rail can overlap very long lines (code that reaches the panel
-  edge).
+  edge); no horizontal scroll / wrap yet.
 
 ## Stage 1 — Skeleton
 

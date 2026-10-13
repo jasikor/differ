@@ -143,3 +143,28 @@ pub fn dim_style() -> Style {
 pub fn num_style() -> Style {
     Style::new().fg(Color::Rgb(0x5c, 0x66, 0x70))
 }
+
+// Overview ruler: a neutral track that brightens inside the viewport, and hunk
+// cells coloured by kind.
+pub const RULER_BRIGHT: Color = Color::Rgb(0xc8, 0xce, 0xd4);
+pub const RULER_DIM: Color = Color::Rgb(0x44, 0x49, 0x4e);
+
+pub fn hunk_color(kind: crate::model::Kind) -> Color {
+    match kind {
+        crate::model::Kind::Removed => GUTTER_REMOVED,
+        crate::model::Kind::Added => GUTTER_ADDED,
+        crate::model::Kind::Changed | crate::model::Kind::Equal => GUTTER_CHANGED,
+    }
+}
+
+/// Darken a colour (for ruler cells outside the viewport).
+pub fn dim(color: Color) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as u32 * 45 / 100) as u8,
+            (g as u32 * 45 / 100) as u8,
+            (b as u32 * 45 / 100) as u8,
+        ),
+        other => other,
+    }
+}
