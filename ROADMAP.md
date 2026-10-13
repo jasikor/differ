@@ -28,6 +28,15 @@ Manual refresh for the MVP. `mockup/` stays as the visual reference.
 
 - Stage 1 (skeleton): **done** — workspace + `differ/` crate + `git::Repo`
   (discover/status/contents) + placeholder UI.
+- Stage 2 (read + view): **done** — renderer ported to `differ/src/view/`,
+  file list + two-pane diff, selection (`j`/`k`), before/after content,
+  `R` refresh.
+
+## Known issues (for the Stage 4 bug pass)
+
+- Busy/overlapping connectors on diffs with many hunks (lanes are limited).
+- The old-side rail can overlap very long lines (code that reaches the panel
+  edge).
 
 ## Stage 1 — Skeleton
 

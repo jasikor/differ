@@ -106,24 +106,46 @@ impl Repo {
     }
 
     /// `git show <spec>` (e.g. `:path` for the index, `HEAD:path` for HEAD).
-    #[allow(dead_code)]
     pub fn show(&self, spec: &str) -> Result<String> {
         self.git(&["show", spec])
     }
 
-    #[allow(dead_code)]
     pub fn worktree(&self, path: &str) -> Result<String> {
         std::fs::read_to_string(self.root.join(path)).map_err(Error::Io)
     }
 
-    /// Unstaged before/after: the index (`:path`) vs the worktree.
-    /// Stage 2 will expand this to handle added/deleted files and the staged
-    /// side.
-    #[allow(dead_code)]
-    pub fn contents(&self, path: &str) -> Result<(String, String)> {
-        let before = self.show(&format!(":{path}"))?;
-        let after = self.worktree(path)?;
-        Ok((before, after))
+    /// Before/after text for a changed file, mirroring `git status`:
+    /// unstaged = index ↔ worktree, staged = HEAD ↔ index. Added/untracked have
+    /// an empty before; deleted has an empty after.
+    pub fn before_after(&self, entry: &FileEntry) -> Result<(String, String)> {
+        let path = &entry.path;
+        if let Some(y) = entry.unstaged {
+            let before = if y == '?' {
+                String::new()
+            } else {
+                self.show(&format!(":{path}"))?
+            };
+            let after = if y == 'D' {
+                String::new()
+            } else {
+                self.worktree(path)?
+            };
+            Ok((before, after))
+        } else if let Some(x) = entry.staged {
+            let before = if x == 'A' {
+                String::new()
+            } else {
+                self.show(&format!("HEAD:{path}"))?
+            };
+            let after = if x == 'D' {
+                String::new()
+            } else {
+                self.show(&format!(":{path}"))?
+            };
+            Ok((before, after))
+        } else {
+            Ok((String::new(), String::new()))
+        }
     }
 }
 
