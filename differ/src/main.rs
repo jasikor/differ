@@ -60,9 +60,13 @@ fn run(
         terminal.draw(|f| view::draw(f, app))?;
         if let Event::Key(key) = event::read()? {
             let key = Key::from_event(key);
-            // The `s` jump captures keys directly while it is active.
+            // Modal input captures keys while active.
             if app.jump_active() {
                 app.jump_key(key.code);
+                continue;
+            }
+            if app.search_input() {
+                app.search_key(key.code);
                 continue;
             }
             if let Resolution::Run(cmd) = keymap.feed(key) {

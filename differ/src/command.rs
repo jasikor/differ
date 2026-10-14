@@ -61,6 +61,11 @@ pub enum Command {
     ToggleFiles,
     /// Start the `s` jump: type a character, then a label to teleport there.
     StartJump,
+    /// Open the `/` search prompt.
+    Search,
+    /// Jump to the next / previous search match.
+    SearchNext,
+    SearchPrev,
     Reload,
 }
 
@@ -97,6 +102,9 @@ impl Command {
             Command::ToggleZoom => app.toggle_zoom(),
             Command::ToggleFiles => app.toggle_files(),
             Command::StartJump => app.start_jump(),
+            Command::Search => app.start_search(),
+            Command::SearchNext => app.search_next(),
+            Command::SearchPrev => app.search_prev(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue

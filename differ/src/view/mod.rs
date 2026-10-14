@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, JumpState};
+use crate::app::{App, Focus, JumpState, Search};
 use crate::model;
 
 /// Width of the file-list column.
@@ -168,8 +168,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.zoom.is_some(),
     );
 
-    // Cursors (topmost, so they read clearly).
+    // Search matches (under the cursor so the cursor line still reads).
     let old_off = panes::num_width(old_kinds.len()) + 1;
+    if let Some(search) = app.search() {
+        draw_search(f, app, search, old_body, new_body, old_off);
+    }
+
+    // Cursors (topmost, so they read clearly).
     draw_cursor(
         f,
         old_body,
@@ -267,6 +272,53 @@ fn draw_jump_labels(f: &mut Frame, app: &App, old_body: Rect, new_body: Rect, ol
     }
 }
 
+/// Tint every visible search match, brighter for the one under the cursor
+/// (vim's `Search` vs `CurSearch`).
+fn draw_search(
+    f: &mut Frame,
+    app: &App,
+    search: &Search,
+    old_body: Rect,
+    new_body: Rect,
+    old_off: usize,
+) {
+    let (body, top, base, left) = if search.old_side {
+        (old_body, app.old_top, old_off, app.left(true))
+    } else {
+        (new_body, app.new_top, theme::NEW_MARGIN, app.left(false))
+    };
+    if body.width == 0 {
+        return;
+    }
+    let (cur_line, cur_col) = if search.old_side {
+        (app.old_cursor, app.cursor_col(true))
+    } else {
+        (app.new_cursor, app.cursor_col(false))
+    };
+    let buf = f.buffer_mut();
+    for hit in &search.matches {
+        let row = hit.line as isize - top as isize;
+        if row < 0 || row >= body.height as isize {
+            continue;
+        }
+        let y = body.y + row as u16;
+        let current = hit.line == cur_line && hit.col == cur_col;
+        for i in 0..hit.len {
+            let x = base as isize + hit.col as isize - left as isize + i as isize;
+            if x < 0 || x >= body.width as isize {
+                continue;
+            }
+            let cell = &mut buf[(body.x + x as u16, y)];
+            if current {
+                cell.set_bg(theme::SEARCH_CURRENT_BG);
+                cell.set_fg(theme::SEARCH_CURRENT_FG);
+            } else {
+                cell.set_bg(theme::SEARCH_BG);
+            }
+        }
+    }
+}
+
 fn help_line(app: &App, old_total: usize) -> String {
     let path = app.selected_path().unwrap_or("(no file)");
     let cur = app.old_top.min(old_total);
@@ -289,8 +341,14 @@ fn help_line(app: &App, old_total: usize) -> String {
         JumpState::Idle => String::new(),
         JumpState::Active => format!("   jump: /{}", app.jump_pattern()),
     };
+    let search = if app.search_input() {
+        let pattern = app.search().map(|s| s.pattern.as_str()).unwrap_or("");
+        format!("   /{pattern}")
+    } else {
+        String::new()
+    };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  s jump  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{search}{msg}"
     )
 }
 
@@ -371,5 +429,35 @@ mod tests {
             .filter(|&x| buf[(x, 1)].bg == theme::JUMP_MATCH_BG)
             .collect();
         assert_eq!(matches, vec![4, 6]);
+    }
+
+    #[test]
+    fn search_tints_matches_on_other_lines() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = test_app(
+            vec![
+                DiffRow::Ctx("ctx".into()),
+                DiffRow::Ctx("axa".into()),
+                DiffRow::Ctx("axa".into()),
+            ],
+            5,
+        );
+        app.show_files = false;
+        app.focus = Focus::Old;
+
+        let mut term = Terminal::new(TestBackend::new(24, 5)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        app.start_search();
+        app.search_key(KeyCode::Char('a'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+
+        // The preview moves the cursor onto line 1, so line 2's matches keep the
+        // plain search tint: x = old body (1) + number margin (2) + col, at y 3.
+        let buf = term.backend().buffer();
+        let tinted: Vec<(u16, u16)> = (0..24)
+            .flat_map(|x| (0..5u16).map(move |y| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].bg == theme::SEARCH_BG)
+            .collect();
+        assert_eq!(tinted, vec![(3, 3), (5, 3)]);
     }
 }

@@ -84,6 +84,10 @@ impl Keymap {
             two(' ', 'e', Command::ToggleFiles),
             // s jumps to a visible character (flash-style).
             one(Char('s'), Command::StartJump),
+            // / searches the focused pane; n/N repeat.
+            one(Char('/'), Command::Search),
+            one(Char('n'), Command::SearchNext),
+            one(Char('N'), Command::SearchPrev),
             // Hunk navigation, vim-diff style.
             two(']', 'c', Command::NextHunk),
             two('[', 'c', Command::PrevHunk),
@@ -255,8 +259,11 @@ mod tests {
         assert_eq!(km.feed(plain('c')), Resolution::Run(Command::NextHunk));
         assert_eq!(km.feed(plain('[')), Resolution::Pending);
         assert_eq!(km.feed(plain('c')), Resolution::Run(Command::PrevHunk));
-        // The old single-key hunk motions are gone.
-        assert_eq!(km.feed(plain('n')), Resolution::None);
+        // `/` searches; n/N repeat. (`p` stays free.)
+        assert_eq!(km.feed(plain('/')), Resolution::Run(Command::Search));
+        assert_eq!(km.feed(plain('n')), Resolution::Run(Command::SearchNext));
+        assert_eq!(km.feed(plain('N')), Resolution::Run(Command::SearchPrev));
+        assert_eq!(km.feed(plain('p')), Resolution::None);
     }
 
     #[test]

@@ -57,6 +57,12 @@ Manual refresh for the MVP.
   `skip` rule), so you can keep typing to narrow the search — that is how the
   surplus matches stay reachable. Labels draw after the match; `Enter` jumps to
   the nearest, `<BS>` edits the pattern, `Esc` cancels.
+- **Search (`/`):** done — `/` searches the focused pane's whole diff (not just
+  the visible window) with a literal, smartcase pattern (lowercase =
+  case-insensitive, any uppercase = case-sensitive), previewing the first match
+  as you type (`incsearch`). `Enter` commits, `n`/`N` step through matches with
+  wrapping and scroll them into view, `Esc` restores the origin. Matches are
+  tinted, the current one brighter.
 - **Cursor:** done — each pane has a cursor (the sync anchor); the viewport
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor

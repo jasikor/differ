@@ -127,6 +127,11 @@ pub const JUMP_BG: Color = Color::Rgb(0xf7, 0x76, 0x8e);
 pub const JUMP_FG: Color = Color::Rgb(0x1b, 0x1f, 0x24);
 pub const JUMP_MATCH_BG: Color = Color::Rgb(0x54, 0x48, 0x6a);
 
+// Search (`/`): a muted yellow for matches, bright amber for the current one.
+pub const SEARCH_BG: Color = Color::Rgb(0x5a, 0x53, 0x2b);
+pub const SEARCH_CURRENT_BG: Color = Color::Rgb(0xc9, 0xa2, 0x27);
+pub const SEARCH_CURRENT_FG: Color = Color::Rgb(0x1b, 0x1f, 0x24);
+
 /// Lighten a colour by `d` per channel (keeps the hue of change tints).
 pub fn brighten(c: Color, d: u8) -> Color {
     match c {
