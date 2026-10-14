@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::git::{self, Repo};
 use crate::model::{self, DiffRow};
+use crate::tree;
 
 /// Context lines kept above a jumped-to hunk.
 const HUNK_CONTEXT: usize = 3;
@@ -38,6 +39,10 @@ struct ViewState {
 pub struct App {
     pub repo: Option<Repo>,
     pub files: Vec<git::FileEntry>,
+    /// Sidebar rows (directories + files) built from `files`, and the row each
+    /// file occupies so movement can skip the directory labels.
+    pub tree: Vec<tree::Row>,
+    pub file_row: Vec<usize>,
     pub selected: usize,
     pub file_scroll: u16,
     pub rows: Vec<DiffRow>,
@@ -63,6 +68,8 @@ impl App {
         let mut app = App {
             repo: None,
             files: Vec::new(),
+            tree: Vec::new(),
+            file_row: Vec::new(),
             selected: 0,
             file_scroll: 0,
             rows: Vec::new(),
@@ -91,7 +98,9 @@ impl App {
     pub fn refresh(&mut self) {
         let Some(repo) = &self.repo else { return };
         match repo.status() {
-            Ok(files) => {
+            Ok(mut files) => {
+                // Sidebar order: subdirectories before files, recursively.
+                tree::order(&mut files);
                 self.files = files;
                 if self.selected >= self.files.len() {
                     self.selected = self.files.len().saturating_sub(1);
@@ -99,7 +108,14 @@ impl App {
             }
             Err(e) => self.message = format!("status: {e}"),
         }
+        self.rebuild_tree();
         self.load_diff();
+    }
+
+    fn rebuild_tree(&mut self) {
+        let (rows, file_row) = tree::build(&self.files);
+        self.tree = rows;
+        self.file_row = file_row;
     }
 
     pub fn selected_path(&self) -> Option<&str> {
@@ -186,10 +202,11 @@ impl App {
 
     fn ensure_file_visible(&mut self) {
         let vp = self.viewport.max(1);
-        if self.selected < self.file_scroll as usize {
-            self.file_scroll = self.selected as u16;
-        } else if self.selected >= self.file_scroll as usize + vp {
-            self.file_scroll = (self.selected + 1 - vp) as u16;
+        let row = self.file_row.get(self.selected).copied().unwrap_or(0);
+        if row < self.file_scroll as usize {
+            self.file_scroll = row as u16;
+        } else if row >= self.file_scroll as usize + vp {
+            self.file_scroll = (row + 1 - vp) as u16;
         }
     }
 

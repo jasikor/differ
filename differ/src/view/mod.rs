@@ -81,7 +81,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Paragraph::new(format!(" {repo_name}")).style(files_style),
         files_head,
     );
-    files::draw(f, &app.files, app.selected, app.file_scroll, files_body);
+    files::draw(
+        f,
+        &app.tree,
+        app.file_row.get(app.selected).copied(),
+        app.file_scroll,
+        files_body,
+    );
 
     f.render_widget(Paragraph::new(" old").style(old_style), old_head);
     f.render_widget(

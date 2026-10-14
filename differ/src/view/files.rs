@@ -1,4 +1,4 @@
-//! The left file list.
+//! The left file tree.
 
 use ratatui::{
     layout::Rect,
@@ -8,22 +8,37 @@ use ratatui::{
     Frame,
 };
 
-use crate::git::FileEntry;
+use crate::tree::Row;
+use crate::view::theme;
 
-pub fn draw(f: &mut Frame, files: &[FileEntry], selected: usize, scroll: u16, area: Rect) {
-    let lines: Vec<Line> = files
+pub fn draw(f: &mut Frame, rows: &[Row], selected: Option<usize>, scroll: u16, area: Rect) {
+    let lines: Vec<Line> = rows
         .iter()
         .enumerate()
-        .map(|(i, fe)| {
-            let x = fe.staged.unwrap_or('.');
-            let y = fe.unstaged.unwrap_or('.');
-            let text = format!("{x}{y} {}", fe.path);
-            let style = if i == selected {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
+        .map(|(i, row)| {
+            let indent = match row {
+                Row::Dir { depth, .. } | Row::File { depth, .. } => "  ".repeat(*depth),
             };
-            Line::from(Span::styled(text, style))
+            match row {
+                Row::Dir { name, .. } => {
+                    Line::from(Span::styled(format!("{indent}{name}/"), theme::dim_style()))
+                }
+                Row::File {
+                    name,
+                    staged,
+                    unstaged,
+                    ..
+                } => {
+                    let x = staged.unwrap_or('.');
+                    let y = unstaged.unwrap_or('.');
+                    let style = if Some(i) == selected {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(format!("{indent}{x}{y} {name}"), style))
+                }
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);

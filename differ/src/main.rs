@@ -3,6 +3,7 @@ mod command;
 mod git;
 mod keymap;
 mod model;
+mod tree;
 mod view;
 
 use std::io;
