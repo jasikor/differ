@@ -38,6 +38,8 @@ pub enum Command {
     /// Scroll the focused pane's view one line down / up.
     ScrollDown,
     ScrollUp,
+    /// Zoom the focused diff pane to the full width (toggle).
+    ToggleZoom,
     Reload,
 }
 
@@ -59,6 +61,7 @@ impl Command {
             Command::CursorBottom => app.cursor_bottom(),
             Command::ScrollDown => app.scroll_down(),
             Command::ScrollUp => app.scroll_up(),
+            Command::ToggleZoom => app.toggle_zoom(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue

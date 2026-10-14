@@ -64,6 +64,9 @@ pub struct App {
     pub old_cursor: usize,
     pub new_cursor: usize,
     pub focus: Focus,
+    /// When set, that diff pane fills the width and the other pane, gutter and
+    /// its ruler are hidden.
+    pub zoom: Option<Focus>,
     /// Pane body height, refreshed by the view each frame.
     pub viewport: usize,
     new_of_old: Vec<usize>,
@@ -88,6 +91,7 @@ impl App {
             old_cursor: 0,
             new_cursor: 0,
             focus: Focus::Files,
+            zoom: None,
             viewport: 1,
             new_of_old: Vec::new(),
             old_of_new: Vec::new(),
@@ -197,10 +201,39 @@ impl App {
 
     pub fn focus_next(&mut self) {
         self.focus = self.focus.right();
+        self.follow_zoom();
     }
 
     pub fn focus_prev(&mut self) {
         self.focus = self.focus.left();
+        self.follow_zoom();
+    }
+
+    /// While zoomed, the shown pane follows focus; focusing the file list (which
+    /// has no zoom) leaves zoom.
+    fn follow_zoom(&mut self) {
+        if self.zoom.is_some() {
+            self.zoom = match self.focus {
+                Focus::Old => Some(Focus::Old),
+                Focus::New => Some(Focus::New),
+                Focus::Files => None,
+            };
+        }
+    }
+
+    /// Toggle single-pane zoom on the focused diff pane. No-op when the file
+    /// list is focused — zoom only applies to the two code panes.
+    pub fn toggle_zoom(&mut self) {
+        let target = match self.focus {
+            Focus::Old => Focus::Old,
+            Focus::New => Focus::New,
+            Focus::Files => return,
+        };
+        self.zoom = if self.zoom == Some(target) {
+            None
+        } else {
+            Some(target)
+        };
     }
 
     // ---- cursor-line placement (vim's zz / zt / zb) ----

@@ -711,6 +711,10 @@ fn paint(f: &mut Frame, x: u16, y: u16, ch: char, color: Color) {
 
 /// Paint the rails, gap arrows and bridges into the panels, then reset the
 /// background outside [first letter .. rail].
+///
+/// With `rails_only` (single-pane zoom) the tees, bridges and gap arrows are
+/// skipped — they point at the hidden pane and would stretch across the width —
+/// leaving just the vertical change bars hugging the code.
 pub fn draw_overlays(
     f: &mut Frame,
     ovs: &[Ov],
@@ -718,6 +722,7 @@ pub fn draw_overlays(
     old_body: Rect,
     new_body: Rect,
     scroll: u16,
+    rails_only: bool,
 ) {
     let row_of = |body: Rect, row: i32| -> Option<u16> {
         let top = body.y as i32;
@@ -726,6 +731,9 @@ pub fn draw_overlays(
         (y >= top && y < bottom).then_some(y as u16)
     };
     for ov in ovs {
+        if rails_only && ov.ch != RAIL {
+            continue;
+        }
         let body = if ov.left { old_body } else { new_body };
         if body.width == 0 || ov.col >= body.width as usize {
             continue;

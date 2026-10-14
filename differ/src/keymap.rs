@@ -75,6 +75,11 @@ impl Keymap {
             // Scroll the focused pane's view a line (vim's Ctrl-e / Ctrl-y).
             ctrl(Char('e'), Command::ScrollDown),
             ctrl(Char('y'), Command::ScrollUp),
+            // Ctrl-w is a prefix (vim-window style); Ctrl-w o zooms the pane.
+            (
+                vec![Key::ctrl(Char('w')), Key::plain(Char('o'))],
+                Command::ToggleZoom,
+            ),
             one(Char('n'), Command::NextHunk),
             one(Char('p'), Command::PrevHunk),
             // Put the cursor line at the middle / top / bottom (vim's zz/zt/zb).
@@ -170,6 +175,13 @@ mod tests {
         );
         // Plain e/y stay free.
         assert_eq!(km.feed(plain('e')), Resolution::None);
+    }
+
+    #[test]
+    fn ctrl_w_o_toggles_zoom() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(Key::ctrl(KeyCode::Char('w'))), Resolution::Pending);
+        assert_eq!(km.feed(plain('o')), Resolution::Run(Command::ToggleZoom));
     }
 
     #[test]

@@ -23,15 +23,42 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [main, help] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
     let gap_w = gutter::gutter_width(&app.rows);
-    let [files_col, old_ruler, old, gap, new, new_ruler] = Layout::horizontal([
-        Constraint::Length(FILES_W),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(gap_w),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(main);
+    // Single-pane zoom: the focused pane takes the full width; the other pane,
+    // the gutter and its ruler collapse to zero-size rects.
+    let zero = Rect::new(0, 0, 0, 0);
+    let (files_col, old_ruler, old, gap, new, new_ruler) = match app.zoom {
+        Some(Focus::Old) => {
+            let [fc, or, o] = Layout::horizontal([
+                Constraint::Length(FILES_W),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .areas(main);
+            (fc, or, o, zero, zero, zero)
+        }
+        Some(Focus::New) => {
+            let [fc, n, nr] = Layout::horizontal([
+                Constraint::Length(FILES_W),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .areas(main);
+            (fc, zero, zero, zero, n, nr)
+        }
+        // Not zoomed (the file list is never a zoom target).
+        _ => {
+            let [fc, or, o, g, n, nr] = Layout::horizontal([
+                Constraint::Length(FILES_W),
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(gap_w),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .areas(main);
+            (fc, or, o, g, n, nr)
+        }
+    };
 
     let [files_head, files_body] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(files_col);
@@ -46,7 +73,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(new_ruler);
 
     // Let the app know how many lines fit, for scrolling/clamping.
-    app.viewport = old_body.height as usize;
+    app.viewport = main.height.saturating_sub(1) as usize;
 
     let old_w = old_body.width as usize;
     let new_w = new_body.width as usize;
@@ -111,7 +138,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Paragraph::new(gutter_lines).scroll((old_top as u16, 0)),
         gap_body,
     );
-    gutter::draw_overlays(f, &ovs, &clears, old_body, new_body, old_top as u16);
+    gutter::draw_overlays(
+        f,
+        &ovs,
+        &clears,
+        old_body,
+        new_body,
+        old_top as u16,
+        app.zoom.is_some(),
+    );
 
     // Cursors (topmost, so they read clearly).
     let old_off = panes::num_width(old_kinds.len()) + 1;
@@ -188,6 +223,6 @@ fn help_line(app: &App, old_total: usize) -> String {
         format!("   {}", app.message)
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^W o zoom  PgUp/PgDn  R reload  q quit{msg}"
     )
 }
