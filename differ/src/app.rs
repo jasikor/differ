@@ -1205,6 +1205,9 @@ impl App {
     }
 
     fn load_diff(&mut self) {
+        // A different diff invalidates the search's cached match positions.
+        self.search = None;
+        self.search_input = false;
         self.rows.clear();
         self.message.clear();
         self.old_top = 0;
@@ -1984,6 +1987,21 @@ mod tests {
         app.start_search();
         assert!(!app.search_input());
         assert!(app.message.contains("focus a diff pane"));
+    }
+
+    #[test]
+    fn loading_a_diff_clears_the_search() {
+        // Switching files (or reloading) must drop stale match positions.
+        let mut app = app_with(vec![DiffRow::Ctx("abc".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_search();
+        app.search_key(KeyCode::Char('a'));
+        app.search_key(KeyCode::Enter);
+        assert!(app.search().is_some());
+        app.load_diff();
+        assert!(app.search().is_none());
+        assert!(!app.search_input());
     }
 
     #[test]
