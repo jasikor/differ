@@ -20,12 +20,14 @@ that visually tie each change together across the two panes.
 cargo run -p differ -- --repo /path/to/repo   # defaults to the current directory
 ```
 
-**Keys:** `Ctrl-h`/`Ctrl-l` cycle panels (files / old / new) · `j`/`k`
-(or arrows) move · `n`/`p` next/prev hunk · `zz`/`zt`/`zb` put the cursor line
-at middle/top/bottom · `Ctrl-e`/`Ctrl-y` scroll the view a line (cursor stays) ·
-`Ctrl-z` zoom the focused pane · `Space e` show/hide the file panel ·
-`PgUp`/`PgDn` page · `gg`/`G` top/bottom ·
-`R` reload · `q`/`Esc` quit.
+**Keys:** `Ctrl-h`/`Ctrl-l` cycle panels (files / old / new) · `h`/`j`/`k`/`l`
+(or arrows) move · `w`/`b`/`e` by word, `W`/`B`/`E` by WORD · `0`/`^`/`$`
+line start / first non-blank / end · `]c`/`[c` next/prev change · `gg`/`G`
+top/bottom ·
+`zz`/`zt`/`zb` put the cursor line at middle/top/bottom · `Ctrl-e`/`Ctrl-y`
+scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused pane ·
+`Space e` show/hide the file panel · `PgUp`/`PgDn` page ·
+`R` reload · `q` quit · `Esc` cancels a pending key.
 
 ## License
 

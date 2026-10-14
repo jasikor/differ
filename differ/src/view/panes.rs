@@ -121,8 +121,57 @@ pub fn num_width(total: usize) -> usize {
     total.max(1).to_string().len()
 }
 
+/// Width of the code area: the pane width minus its line-number and margin
+/// columns. Shared with the app so horizontal scrolling can clamp to it.
+pub fn code_width(width: usize, total: usize, old_side: bool) -> usize {
+    let num_w = num_width(total);
+    width.saturating_sub(num_w + 1 + if old_side { OLD_MARGIN } else { NEW_MARGIN })
+}
+
+/// Keep only the `width` code columns starting at `skip` (the horizontal scroll
+/// offset), dropping what scrolls off either end.
+fn window(spans: Vec<Span<'static>>, skip: usize, width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    let mut used = 0usize;
+    for sp in spans {
+        if used >= width {
+            break;
+        }
+        let content = sp.content.into_owned();
+        let len = content.chars().count();
+        if skipped + len <= skip {
+            skipped += len;
+            continue;
+        }
+        let mut chars: Vec<char> = content.chars().collect();
+        if skipped < skip {
+            chars.drain(0..skip - skipped);
+            skipped = skip;
+        }
+        let take = (width - used).min(chars.len());
+        if take > 0 {
+            let text: String = chars[..take].iter().collect();
+            out.push(Span::styled(text, sp.style));
+            used += take;
+        }
+    }
+    if used < width {
+        out.push(Span::raw(" ".repeat(width - used)));
+    }
+    out
+}
+
 /// Build one pane's lines (line numbers included) from the diff rows.
-pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'static>> {
+///
+/// `left` is the horizontal scroll offset: the code columns `[left, left +
+/// code_w)` are shown, so a long line can pan under a fixed number margin.
+pub fn build_side(
+    rows: &[DiffRow],
+    old_side: bool,
+    width: usize,
+    left: usize,
+) -> Vec<Line<'static>> {
     let total = rows
         .iter()
         .filter(|r| match r {
@@ -132,7 +181,9 @@ pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'s
         })
         .count();
     let num_w = num_width(total);
-    let code_w = width.saturating_sub(num_w + 1 + if old_side { OLD_MARGIN } else { NEW_MARGIN });
+    let code_w = code_width(width, total, old_side);
+    // Render `left` extra columns so the window has content to skip into.
+    let draw_w = code_w + left;
     let num_style = crate::view::theme::num_style();
 
     let mut out = Vec::new();
@@ -141,16 +192,16 @@ pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'s
         let line = match row {
             DiffRow::Ctx(t) => {
                 lineno += 1;
-                Some(ctx(t, code_w))
+                Some(ctx(t, draw_w))
             }
             DiffRow::Chg(o, n) => {
                 lineno += 1;
-                Some(modified_line(o, n, old_side, code_w))
+                Some(modified_line(o, n, old_side, draw_w))
             }
             DiffRow::Del(t) => {
                 if old_side {
                     lineno += 1;
-                    Some(side_line(t, false, old_side, code_w))
+                    Some(side_line(t, false, old_side, draw_w))
                 } else {
                     None
                 }
@@ -158,22 +209,22 @@ pub fn build_side(rows: &[DiffRow], old_side: bool, width: usize) -> Vec<Line<'s
             DiffRow::Ins(t) => {
                 if !old_side {
                     lineno += 1;
-                    Some(side_line(t, true, old_side, code_w))
+                    Some(side_line(t, true, old_side, draw_w))
                 } else {
                     None
                 }
             }
         };
         let Some(line) = line else { continue };
-        let line = clip(line.spans, code_w);
+        let code = window(clip(line.spans, draw_w), left, code_w);
         let label = format!("{lineno:>num_w$}");
         let mut spans = Vec::new();
         if old_side {
             spans.push(Span::styled(format!("{label} "), num_style));
-            spans.extend(line);
+            spans.extend(code);
         } else {
             spans.push(Span::raw(" ".repeat(NEW_MARGIN)));
-            spans.extend(line);
+            spans.extend(code);
             spans.push(Span::styled(format!(" {label}"), num_style));
         }
         out.push(Line::from(spans));
@@ -202,15 +253,15 @@ mod tests {
     fn each_side_skips_the_other_sides_exclusive_rows() {
         let rows = demo_rows();
         // old: Ctx, Del, Chg (Ins dropped); new: Ctx, Ins, Chg (Del dropped).
-        assert_eq!(build_side(&rows, true, 20).len(), 3);
-        assert_eq!(build_side(&rows, false, 20).len(), 3);
+        assert_eq!(build_side(&rows, true, 20, 0).len(), 3);
+        assert_eq!(build_side(&rows, false, 20, 0).len(), 3);
     }
 
     #[test]
     fn old_side_reserves_its_margin_the_new_side_indents() {
         let rows = demo_rows();
-        let old = build_side(&rows, true, 20);
-        let new = build_side(&rows, false, 20);
+        let old = build_side(&rows, true, 20, 0);
+        let new = build_side(&rows, false, 20, 0);
         // Both panes render exactly `width` columns once their margin is added.
         assert_eq!(width(&old[0]), 20 - OLD_MARGIN);
         assert_eq!(width(&new[0]), 20);
@@ -220,8 +271,26 @@ mod tests {
     #[test]
     fn long_lines_are_clipped_to_the_code_width() {
         let rows = vec![DiffRow::Ctx("x".repeat(80))];
-        let old = build_side(&rows, true, 20);
+        let old = build_side(&rows, true, 20, 0);
         assert_eq!(width(&old[0]), 20 - OLD_MARGIN);
+    }
+
+    #[test]
+    fn horizontal_offset_pans_the_code_but_keeps_the_number() {
+        let rows = vec![DiffRow::Ctx("0123456789".into())];
+        let full = build_side(&rows, true, 14, 0);
+        let panned = build_side(&rows, true, 14, 4);
+        // The old pane is `width - OLD_MARGIN` columns either way.
+        assert_eq!(width(&full[0]), 14 - OLD_MARGIN);
+        assert_eq!(width(&panned[0]), 14 - OLD_MARGIN);
+        // The number margin is unchanged; the code starts at the offset.
+        assert_eq!(full[0].spans[0].content, "1 ");
+        assert_eq!(panned[0].spans[0].content, "1 ");
+        let code: String = panned[0].spans[1..]
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(code.starts_with("456789"), "got {code:?}");
     }
 
     #[test]

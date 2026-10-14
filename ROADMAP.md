@@ -41,6 +41,13 @@ Manual refresh for the MVP.
 - **Vim motions:** done — `gg`/`G` jump to the top/bottom of the focused region
   (first/last line of a pane, first/last file in the list), `Home` was dropped
   in favour of them.
+- **Word / line motions:** done — `h`/`j`/`k`/`l` move by column and line,
+  `w`/`b`/`e` (and the whitespace-delimited `W`/`B`/`E`) move by word and
+  `0`/`^`/`$` go to the line start / first non-blank / end, with a per-pane
+  cursor column. Long
+  lines pan horizontally to keep the cursor column visible (the code scrolls
+  under a fixed number margin, and the in-pane rails/arrows follow it, clamped
+  to the pane). Hunk navigation moved from `n`/`p` to Vim-diff `]c`/`[c`.
 - **Cursor:** done — each pane has a cursor (the sync anchor); the viewport
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor
@@ -58,13 +65,14 @@ Manual refresh for the MVP.
   drops out of the `Ctrl-h`/`Ctrl-l` cycle. Hiding it while focused returns
   focus to the last diff pane; showing it focuses the panel.
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
-  data-driven, sequence-capable table.
+  data-driven, sequence-capable table. `Esc` cancels a pending sequence; `q`
+  quits.
 
 ## Known issues (for a future bug pass)
 
 - Busy/overlapping connectors on diffs with many hunks (lanes are limited).
-- The old-side rail can overlap very long lines (code that reaches the panel
-  edge); no horizontal scroll / wrap yet.
+- Horizontal scroll counts one column per `char`, so tabs (and wide/zero-width
+  characters) don't line up with the terminal's own column count.
 
 ## Stage 1 — Skeleton
 

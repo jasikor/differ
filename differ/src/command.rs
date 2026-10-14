@@ -21,12 +21,27 @@ pub enum Command {
     Down,
     /// Move one step up in the focused region.
     Up,
+    /// Move the cursor one column left / right in the focused pane.
+    Left,
+    Right,
     PageDown,
     PageUp,
     /// Jump to the top of the focused region.
     Top,
     /// Jump to the bottom of the focused region.
     Bottom,
+    /// Move the cursor to the start / first non-blank / end of the line.
+    LineStart,
+    LineFirstNonBlank,
+    LineEnd,
+    /// Move the cursor by words (vim's `w`/`b`/`e`).
+    WordForward,
+    WordBack,
+    WordEnd,
+    /// Move by WORDs (vim's `W`/`B`/`E`): whitespace-delimited.
+    WordForwardBig,
+    WordBackBig,
+    WordEndBig,
     NextHunk,
     PrevHunk,
     /// Cycle focus to the previous region.
@@ -53,10 +68,21 @@ impl Command {
             Command::Quit => return Outcome::Quit,
             Command::Down => app.down(),
             Command::Up => app.up(),
+            Command::Left => app.col_left(),
+            Command::Right => app.col_right(),
             Command::PageDown => app.page_down(),
             Command::PageUp => app.page_up(),
             Command::Top => app.top(),
             Command::Bottom => app.bottom(),
+            Command::LineStart => app.line_start(),
+            Command::LineFirstNonBlank => app.line_first_non_blank(),
+            Command::LineEnd => app.line_end(),
+            Command::WordForward => app.word_forward(),
+            Command::WordBack => app.word_back(),
+            Command::WordEnd => app.word_end(),
+            Command::WordForwardBig => app.word_forward_big(),
+            Command::WordBackBig => app.word_back_big(),
+            Command::WordEndBig => app.word_end_big(),
             Command::NextHunk => app.next_hunk(),
             Command::PrevHunk => app.prev_hunk(),
             Command::FocusPrev => app.focus_prev(),

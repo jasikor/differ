@@ -318,6 +318,8 @@ pub fn build_gutter(
     gap: u16,
     old_w: usize,
     new_w: usize,
+    old_left: usize,
+    new_left: usize,
 ) -> (Vec<Line<'static>>, Vec<Ov>, Vec<Clear>) {
     let width = gap as usize;
     let style = LINE;
@@ -499,12 +501,17 @@ pub fn build_gutter(
         link(&mut cells, c3row, width - 1, LEFT | RIGHT, color);
 
         // ---- old (left) panel ----
+        let hi = old_w.saturating_sub(1);
         if !added {
             let end = (left.0..left.1)
                 .filter_map(|r| old_texts.get(r))
                 .filter_map(|t| last_non_space(t))
                 .max();
-            let raw = old_off + end.map_or(0, |e| e + 1) + 1;
+            // Code columns shift left by the pane's horizontal scroll; the rail
+            // follows the text but never intrudes into the number margin.
+            let raw = (old_off + end.map_or(0, |e| e + 1) + 1)
+                .saturating_sub(old_left)
+                .clamp(old_off.min(hi), hi);
             let lc = if rail_off[lane] == 1 {
                 if raw >= old_w.saturating_sub(1) {
                     // Truncated: the arrow is pinned to the pane edge, so the
@@ -515,7 +522,7 @@ pub fn build_gutter(
                     (raw + 1).min(old_w.saturating_sub(1))
                 }
             } else {
-                raw.min(old_w.saturating_sub(1))
+                raw
             };
             for row in (left.0 as i32)..(left.1 as i32) {
                 ovs.push(Ov {
@@ -549,7 +556,9 @@ pub fn build_gutter(
                 .map(|t| leading_ws(t))
                 .min()
                 .unwrap_or(0);
-            let first_col = old_off + min_first;
+            let first_col = (old_off + min_first)
+                .saturating_sub(old_left)
+                .clamp(old_off.min(hi), hi);
             for r in left.0..left.1 {
                 push_clear(&mut clears, true, r as i32, old_off..first_col);
                 push_clear(&mut clears, true, r as i32, lc..old_w);
@@ -565,7 +574,9 @@ pub fn build_gutter(
                     .get(left.0 - 1)
                     .and_then(|t| last_non_space(t))
                     .max(old_texts.get(left.0).and_then(|t| last_non_space(t)));
-                let col = (old_off + end.map_or(0, |e| e + 1) + 1).min(old_w.saturating_sub(1));
+                let col = (old_off + end.map_or(0, |e| e + 1) + 1)
+                    .saturating_sub(old_left)
+                    .clamp(old_off.min(hi), hi);
                 // The bridge runs along the tall triangle's row: the bottom row
                 // by default, the top row once the arrow has flipped.
                 let bridge_row = if flip {
@@ -608,7 +619,10 @@ pub fn build_gutter(
                 .unwrap_or(0);
             // The new pane indents its code by `NEW_MARGIN` (rail + space), so
             // the rail sits at `start` and the code begins two columns later.
-            let rc = (start + new_rail_off[lane]).min(new_w.saturating_sub(1));
+            // It follows the horizontal scroll, staying in the pane.
+            let rc = (start + new_rail_off[lane])
+                .saturating_sub(new_left)
+                .min(new_w.saturating_sub(1));
             for r in rs2..re2 {
                 if r >= 0 && r < height {
                     ovs.push(Ov {
@@ -636,13 +650,17 @@ pub fn build_gutter(
                 .filter(|t| t.chars().any(|c| !c.is_whitespace()))
                 .map(|t| NEW_MARGIN + leading_ws(t))
                 .min()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .saturating_sub(new_left)
+                .max(NEW_MARGIN.min(new_w));
             let max_end = (rs..re)
                 .filter_map(|r| new_texts.get(r))
                 .filter_map(|t| last_non_space(t))
                 .map(|e| NEW_MARGIN + e + 1)
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .saturating_sub(new_left)
+                .clamp(NEW_MARGIN.min(new_w), new_w);
             for i in 0..(re - rs) {
                 let row = rs2 + i as i32;
                 push_clear(&mut clears, false, row, 0..min_first);
@@ -660,7 +678,8 @@ pub fn build_gutter(
             };
             let (tall_row, short_row) = if flip { (rs2 - 1, rs2) } else { (rs2, rs2 - 1) };
             if indent >= 2 {
-                let col = indent - 2;
+                // The gap arrow follows the block's indentation, scrolled with it.
+                let col = (indent - 2).saturating_sub(new_left);
                 push_run(&mut ovs, false, tall_row, 0..col, style.h, color);
                 ovs.push(Ov {
                     left: false,
@@ -790,7 +809,7 @@ mod tests {
         rows.extend(rep(6, &|i| DiffRow::Ins(format!("tail{i}"))));
         rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
 
-        let (lines, _ovs, _clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let (lines, _ovs, _clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, 0, 0);
         for (r, line) in lines.iter().enumerate() {
             for span in &line.spans {
                 assert_ne!(span.style.fg, Some(CROSS), "crossing on gutter row {r}");
@@ -817,7 +836,8 @@ mod tests {
         rows.extend(rep(5, &|i| DiffRow::Ctx(format!("z{i}"))));
 
         for shift in -22i32..=22 {
-            let (lines, _ovs, _clears) = build_gutter(&rows, shift, gutter_width(&rows), 38, 38);
+            let (lines, _ovs, _clears) =
+                build_gutter(&rows, shift, gutter_width(&rows), 38, 38, 0, 0);
             for (r, line) in lines.iter().enumerate() {
                 for span in &line.spans {
                     assert_ne!(
@@ -844,7 +864,7 @@ mod tests {
             DiffRow::Ins("    let x = 1;".into()),
             DiffRow::Ctx("}".into()),
         ];
-        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, 0, 0);
         let rail = ovs.iter().find(|o| o.left && o.ch == RAIL).map(|o| o.col);
         let arrow = ovs
             .iter()
@@ -868,7 +888,7 @@ mod tests {
             DiffRow::Ins("    let extra = 2;".into()),
             DiffRow::Ctx("}".into()),
         ];
-        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 30, 30);
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 30, 30, 0, 0);
         let rail = ovs.iter().find(|o| o.left && o.ch == RAIL).map(|o| o.col);
         let arrow = ovs
             .iter()
@@ -890,7 +910,7 @@ mod tests {
             DiffRow::Chg("    let old = 2;".into(), "    let new = 3;".into()),
             DiffRow::Ctx("}".into()),
         ];
-        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, 0, 0);
         let arrow = ovs
             .iter()
             .find(|o| !o.left && (o.ch == END_TOP || o.ch == END_BOT))
@@ -916,7 +936,7 @@ mod tests {
             DiffRow::Ctx("    let b = 1;".into()),
         ];
         let glyphs = |shift: i32| -> Vec<char> {
-            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40);
+            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40, 0, 0);
             let mut g: Vec<char> = ovs
                 .iter()
                 .filter(|o| {
@@ -943,7 +963,7 @@ mod tests {
             DiffRow::Ctx("    let b = 2;".into()),
         ];
         let glyphs = |shift: i32| -> Vec<char> {
-            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40);
+            let (_, ovs, _) = build_gutter(&rows, shift, gutter_width(&rows), 40, 40, 0, 0);
             let mut g: Vec<char> = ovs
                 .iter()
                 .filter(|o| {
@@ -973,7 +993,7 @@ mod tests {
             DiffRow::Del("".into()),
             DiffRow::Ctx("b".into()),
         ];
-        let (_lines, _ovs, clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40);
+        let (_lines, _ovs, clears) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, 0, 0);
 
         // old_off = 2 (1-digit line numbers + space); indent 4 -> first = 6;
         // rail = old_off + max_end(15) + 2 = 19.
@@ -982,5 +1002,34 @@ mod tests {
             assert_eq!(tint.first(), Some(&6), "row {row} left edge");
             assert_eq!(tint.last(), Some(&17), "row {row} right edge");
         }
+    }
+
+    #[test]
+    fn horizontal_scroll_shifts_the_old_rail() {
+        // A removed block with a matched added block (so both sides exist).
+        let rows = vec![
+            DiffRow::Del("    removed one".into()),
+            DiffRow::Ins("    added one".into()),
+            DiffRow::Ctx("ctx".into()),
+        ];
+        let rail = |old_left: usize| -> usize {
+            let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, old_left, 0);
+            ovs.iter().find(|o| o.left && o.ch == RAIL).unwrap().col
+        };
+        let base = rail(0);
+        assert_eq!(rail(3), base - 3);
+    }
+
+    #[test]
+    fn horizontal_scroll_keeps_the_rail_in_the_pane() {
+        // Scrolling far past the text pins the rail to the code's left edge
+        // rather than letting it run into the number margin.
+        let rows = vec![DiffRow::Del("short".into()), DiffRow::Ins("x".into())];
+        let (_, ovs, _) = build_gutter(&rows, 0, gutter_width(&rows), 40, 40, 999, 0);
+        let rail = ovs.iter().find(|o| o.left && o.ch == RAIL).unwrap().col;
+        assert!(
+            rail >= 2,
+            "rail at {rail} should stay past the number margin"
+        );
     }
 }

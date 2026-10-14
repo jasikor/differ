@@ -83,6 +83,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let new_w = new_body.width as usize;
     let old_top = app.old_top;
     let new_top = app.new_top;
+    let old_kinds = model::side_kinds(&app.rows, true);
+    let new_kinds = model::side_kinds(&app.rows, false);
+    app.old_code_w = panes::code_width(old_w, old_kinds.len(), true);
+    app.new_code_w = panes::code_width(new_w, new_kinds.len(), false);
+    // A resize (or a zoom / panel toggle) changes the widths outside the
+    // cursor-moving commands, so re-clamp the horizontal scroll every frame.
+    app.keep_cols_visible();
 
     let (files_style, old_style, new_style) = match app.focus {
         Focus::Files => (
@@ -124,22 +131,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Paragraph::new(" old").style(old_style), old_head);
     f.render_widget(
-        Paragraph::new(panes::build_side(&app.rows, true, old_w)).scroll((old_top as u16, 0)),
+        Paragraph::new(panes::build_side(&app.rows, true, old_w, app.left(true)))
+            .scroll((old_top as u16, 0)),
         old_body,
     );
     f.render_widget(Paragraph::new(" new").style(new_style), new_head);
     f.render_widget(
-        Paragraph::new(panes::build_side(&app.rows, false, new_w)).scroll((new_top as u16, 0)),
+        Paragraph::new(panes::build_side(&app.rows, false, new_w, app.left(false)))
+            .scroll((new_top as u16, 0)),
         new_body,
     );
 
-    let old_kinds = model::side_kinds(&app.rows, true);
-    let new_kinds = model::side_kinds(&app.rows, false);
     ruler::draw(f, old_ruler_body, &old_kinds, old_top as u16);
     ruler::draw(f, new_ruler_body, &new_kinds, new_top as u16);
 
-    let (gutter_lines, ovs, clears) =
-        gutter::build_gutter(&app.rows, app.pair_shift(), gap_w, old_w, new_w);
+    let (gutter_lines, ovs, clears) = gutter::build_gutter(
+        &app.rows,
+        app.pair_shift(),
+        gap_w,
+        old_w,
+        new_w,
+        app.left(true),
+        app.left(false),
+    );
     f.render_widget(
         Paragraph::new(gutter_lines).scroll((old_top as u16, 0)),
         gap_body,
@@ -159,7 +173,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_cursor(
         f,
         old_body,
-        old_off,
+        old_off + app.cursor_col(true).saturating_sub(app.left(true)),
         app.old_cursor,
         old_top,
         app.focus == Focus::Old,
@@ -167,7 +181,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_cursor(
         f,
         new_body,
-        0,
+        theme::NEW_MARGIN + app.cursor_col(false).saturating_sub(app.left(false)),
         app.new_cursor,
         new_top,
         app.focus == Focus::New,
@@ -179,9 +193,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// Highlight the cursor cell (the start of the cursor line's code) plus a very
+/// Highlight the cursor cell (the cursor line's code at its column) plus a very
 /// faint tint on the whole cursor line. The active pane is drawn brighter than
-/// the inactive one.
+/// the inactive one. `x_off` is the code column of the cursor cell (the pane's
+/// code offset plus the cursor column minus the horizontal scroll).
 fn draw_cursor(f: &mut Frame, area: Rect, x_off: usize, cursor: usize, top: usize, active: bool) {
     let vp = area.height as usize;
     if vp == 0 || cursor < top || cursor >= top + vp {
@@ -229,6 +244,57 @@ fn help_line(app: &App, old_total: usize) -> String {
         format!("   {}", app.message)
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  gg/G top/bot  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{msg}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{test_app, Focus};
+    use crate::model::DiffRow;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// The single cursor block's x, and the text of the old pane's only body row.
+    fn render(app: &mut App, w: u16) -> (u16, String) {
+        let mut term = Terminal::new(TestBackend::new(w, 3)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        let mut block_x = None;
+        for x in 0..w {
+            for y in 0..3u16 {
+                if buf[(x, y)].bg == theme::CURSOR_ACTIVE {
+                    block_x = Some(x);
+                }
+            }
+        }
+        let row: String = (0..w).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        (block_x.expect("a cursor block"), row)
+    }
+
+    #[test]
+    fn horizontal_scroll_pans_the_code_and_keeps_the_cursor_visible() {
+        // A long context line, no file panel, in a 24-column terminal.
+        let mut app = test_app(vec![DiffRow::Ctx("0123456789".into())], 5);
+        app.show_files = false;
+        app.focus = Focus::Old;
+        // First draw settles the code width, then jump to the line end.
+        render(&mut app, 24);
+        app.line_end();
+
+        let (block_x, row) = render(&mut app, 24);
+        // The window starts at `col + 1 - code_w`; the block sits on the last
+        // visible column. Old body starts at x = 1 (a 1-column ruler), plus the
+        // 2-column number margin.
+        assert_eq!(app.cursor_col(true), 9);
+        assert_eq!(app.left(true), 9 + 1 - app.old_code_w);
+        assert_eq!(
+            block_x,
+            1 + 2 + (app.cursor_col(true) - app.left(true)) as u16
+        );
+        // The old pane's code window shows the tail, not the head. (The row also
+        // contains the new pane, which is not scrolled.)
+        let old_code: String = row.chars().skip(3).take(app.old_code_w).collect();
+        assert_eq!(old_code, "456789");
+    }
 }

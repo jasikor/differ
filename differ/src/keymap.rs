@@ -64,11 +64,14 @@ impl Keymap {
             |a: char, b: char, cmd: Command| (vec![Key::plain(Char(a)), Key::plain(Char(b))], cmd);
         Keymap::new(vec![
             one(Char('q'), Command::Quit),
-            one(Esc, Command::Quit),
+            one(Char('h'), Command::Left),
+            one(Left, Command::Left),
             one(Char('j'), Command::Down),
             one(Down, Command::Down),
             one(Char('k'), Command::Up),
             one(Up, Command::Up),
+            one(Char('l'), Command::Right),
+            one(Right, Command::Right),
             // Cycle panels, vim-window style.
             ctrl(Char('h'), Command::FocusPrev),
             ctrl(Char('l'), Command::FocusNext),
@@ -79,8 +82,20 @@ impl Keymap {
             ctrl(Char('z'), Command::ToggleZoom),
             // Space is the leader; Space e toggles the file (git) panel.
             two(' ', 'e', Command::ToggleFiles),
-            one(Char('n'), Command::NextHunk),
-            one(Char('p'), Command::PrevHunk),
+            // Hunk navigation, vim-diff style.
+            two(']', 'c', Command::NextHunk),
+            two('[', 'c', Command::PrevHunk),
+            // Word motions (vim's w/b/e) and line ends (0/^/$).
+            one(Char('w'), Command::WordForward),
+            one(Char('b'), Command::WordBack),
+            one(Char('e'), Command::WordEnd),
+            // WORD motions (vim's W/B/E): whitespace-delimited.
+            one(Char('W'), Command::WordForwardBig),
+            one(Char('B'), Command::WordBackBig),
+            one(Char('E'), Command::WordEndBig),
+            one(Char('0'), Command::LineStart),
+            one(Char('^'), Command::LineFirstNonBlank),
+            one(Char('$'), Command::LineEnd),
             // Put the cursor line at the middle / top / bottom (vim's zz/zt/zb).
             two('z', 'z', Command::CursorCenter),
             two('z', 't', Command::CursorTop),
@@ -95,7 +110,12 @@ impl Keymap {
     }
 
     /// Feed one key. Stateful: it accumulates keys until a binding resolves.
+    /// Escape always cancels a sequence in progress (vim-style); it never quits.
     pub fn feed(&mut self, key: Key) -> Resolution {
+        if key.code == KeyCode::Esc {
+            self.pending.clear();
+            return Resolution::None;
+        }
         self.pending.push(key);
         let is_prefix = self
             .bindings
@@ -147,8 +167,9 @@ mod tests {
             km.feed(Key::ctrl(KeyCode::Char('l'))),
             Resolution::Run(Command::FocusNext)
         );
-        // The plain letters must stay available for motions, not panel focus.
-        assert_eq!(km.feed(plain('l')), Resolution::None);
+        // The plain letters are the motions, not panel focus.
+        assert_eq!(km.feed(plain('h')), Resolution::Run(Command::Left));
+        assert_eq!(km.feed(plain('l')), Resolution::Run(Command::Right));
     }
 
     #[test]
@@ -173,8 +194,9 @@ mod tests {
             km.feed(Key::ctrl(KeyCode::Char('y'))),
             Resolution::Run(Command::ScrollUp)
         );
-        // Plain e/y stay free.
-        assert_eq!(km.feed(plain('e')), Resolution::None);
+        // Plain e is its own motion (word end), not scrolling; y is free.
+        assert_eq!(km.feed(plain('e')), Resolution::Run(Command::WordEnd));
+        assert_eq!(km.feed(plain('y')), Resolution::None);
     }
 
     #[test]
@@ -194,8 +216,8 @@ mod tests {
         // A leader followed by a non-binding key clears without running.
         assert_eq!(km.feed(plain(' ')), Resolution::Pending);
         assert_eq!(km.feed(plain('j')), Resolution::None);
-        // Plain e stays free.
-        assert_eq!(km.feed(plain('e')), Resolution::None);
+        // Plain e is the word-end motion.
+        assert_eq!(km.feed(plain('e')), Resolution::Run(Command::WordEnd));
     }
 
     #[test]
@@ -210,9 +232,45 @@ mod tests {
     }
 
     #[test]
+    fn word_line_and_hunk_motions_are_bound() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('w')), Resolution::Run(Command::WordForward));
+        assert_eq!(km.feed(plain('b')), Resolution::Run(Command::WordBack));
+        assert_eq!(km.feed(plain('e')), Resolution::Run(Command::WordEnd));
+        assert_eq!(
+            km.feed(plain('W')),
+            Resolution::Run(Command::WordForwardBig)
+        );
+        assert_eq!(km.feed(plain('B')), Resolution::Run(Command::WordBackBig));
+        assert_eq!(km.feed(plain('E')), Resolution::Run(Command::WordEndBig));
+        assert_eq!(km.feed(plain('0')), Resolution::Run(Command::LineStart));
+        assert_eq!(
+            km.feed(plain('^')),
+            Resolution::Run(Command::LineFirstNonBlank)
+        );
+        assert_eq!(km.feed(plain('$')), Resolution::Run(Command::LineEnd));
+        assert_eq!(km.feed(plain(']')), Resolution::Pending);
+        assert_eq!(km.feed(plain('c')), Resolution::Run(Command::NextHunk));
+        assert_eq!(km.feed(plain('[')), Resolution::Pending);
+        assert_eq!(km.feed(plain('c')), Resolution::Run(Command::PrevHunk));
+        // The old single-key hunk motions are gone.
+        assert_eq!(km.feed(plain('n')), Resolution::None);
+    }
+
+    #[test]
     fn unknown_key_is_none() {
         let mut km = Keymap::default_bindings();
         assert_eq!(km.feed(plain('x')), Resolution::None);
+    }
+
+    #[test]
+    fn escape_cancels_a_pending_sequence_without_quitting() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('g')), Resolution::Pending);
+        assert_eq!(km.feed(Key::plain(KeyCode::Esc)), Resolution::None);
+        assert!(km.pending().is_empty());
+        // Escape on its own is a no-op, not a quit.
+        assert_eq!(km.feed(Key::plain(KeyCode::Esc)), Resolution::None);
     }
 
     #[test]

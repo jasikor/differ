@@ -63,6 +63,14 @@ pub struct App {
     /// Cursor line in each pane (kept paired by the line maps).
     pub old_cursor: usize,
     pub new_cursor: usize,
+    /// Goal cursor column in each pane (vim's curswant): the desired column,
+    /// clamped to the line for drawing and motion.
+    old_col: usize,
+    new_col: usize,
+    /// Horizontal scroll offset (code columns) per pane, kept so the cursor
+    /// column stays visible.
+    old_left: usize,
+    new_left: usize,
     pub focus: Focus,
     /// When set, that diff pane fills the width and the other pane, gutter and
     /// its ruler are hidden.
@@ -74,6 +82,9 @@ pub struct App {
     last_diff: Focus,
     /// Pane body height, refreshed by the view each frame.
     pub viewport: usize,
+    /// Visible code width per pane, refreshed by the view each frame.
+    pub old_code_w: usize,
+    pub new_code_w: usize,
     new_of_old: Vec<usize>,
     old_of_new: Vec<usize>,
     /// Saved view position per file path.
@@ -95,11 +106,17 @@ impl App {
             new_top: 0,
             old_cursor: 0,
             new_cursor: 0,
+            old_col: 0,
+            new_col: 0,
+            old_left: 0,
+            new_left: 0,
             focus: Focus::Files,
             zoom: None,
             show_files: true,
             last_diff: Focus::Old,
             viewport: 1,
+            old_code_w: 1,
+            new_code_w: 1,
             new_of_old: Vec::new(),
             old_of_new: Vec::new(),
             view_state: HashMap::new(),
@@ -316,6 +333,184 @@ impl App {
         };
     }
 
+    // ---- horizontal cursor (vim's w/b/e, 0/^/$) ----
+
+    /// The text of `line` on a side (the code shown in that pane).
+    pub fn side_text(&self, old_side: bool, line: usize) -> &str {
+        let row = if old_side {
+            model::old_row(&self.rows, line)
+        } else {
+            model::new_row(&self.rows, line)
+        };
+        match self.rows.get(row) {
+            Some(DiffRow::Ctx(t)) | Some(DiffRow::Del(t)) | Some(DiffRow::Ins(t)) => t,
+            Some(DiffRow::Chg(o, n)) => {
+                if old_side {
+                    o
+                } else {
+                    n
+                }
+            }
+            None => "",
+        }
+    }
+
+    /// The cursor column on a side, clamped to the line (an empty line is 0).
+    pub fn cursor_col(&self, old_side: bool) -> usize {
+        let (col, line) = if old_side {
+            (self.old_col, self.old_cursor)
+        } else {
+            (self.new_col, self.new_cursor)
+        };
+        clamp_col(col, self.side_text(old_side, line).chars().count())
+    }
+
+    /// Horizontal scroll offset for a side.
+    pub fn left(&self, old_side: bool) -> usize {
+        if old_side {
+            self.old_left
+        } else {
+            self.new_left
+        }
+    }
+
+    /// The focused pane's line as chars plus the effective cursor column, or
+    /// `None` when the file list is focused.
+    fn focused_line(&self) -> Option<(Vec<char>, usize)> {
+        let old_side = match self.focus {
+            Focus::Old => true,
+            Focus::New => false,
+            Focus::Files => return None,
+        };
+        let text = self.side_text(
+            old_side,
+            if old_side {
+                self.old_cursor
+            } else {
+                self.new_cursor
+            },
+        );
+        let chars: Vec<char> = text.chars().collect();
+        let col = clamp_col(
+            if old_side { self.old_col } else { self.new_col },
+            chars.len(),
+        );
+        Some((chars, col))
+    }
+
+    /// Move the focused pane's cursor column (no-op on the file list).
+    fn set_col(&mut self, col: usize) {
+        match self.focus {
+            Focus::Old => self.old_col = col,
+            Focus::New => self.new_col = col,
+            Focus::Files => return,
+        }
+        self.keep_cols_visible();
+    }
+
+    /// Move the cursor one column, clamped to the line (vim's `h`/`l`).
+    fn move_col(&mut self, delta: isize) {
+        let Some((chars, col)) = self.focused_line() else {
+            return;
+        };
+        if chars.is_empty() {
+            return;
+        }
+        let last = chars.len() as isize - 1;
+        self.set_col((col as isize + delta).clamp(0, last) as usize);
+    }
+
+    pub fn col_left(&mut self) {
+        self.move_col(-1);
+    }
+
+    pub fn col_right(&mut self) {
+        self.move_col(1);
+    }
+
+    pub fn line_start(&mut self) {
+        self.set_col(0);
+    }
+
+    /// First non-blank column (vim's `^`).
+    pub fn line_first_non_blank(&mut self) {
+        if let Some((chars, _)) = self.focused_line() {
+            let col = chars.iter().take_while(|c| c.is_whitespace()).count();
+            self.set_col(col);
+        }
+    }
+
+    /// Last character of the line (vim's `$`).
+    pub fn line_end(&mut self) {
+        if let Some((chars, _)) = self.focused_line() {
+            self.set_col(chars.len().saturating_sub(1));
+        }
+    }
+
+    /// Run a word-motion over the focused line (no-op on the file list).
+    fn word_move(&mut self, big: bool, f: fn(&[char], usize, bool) -> usize) {
+        if let Some((chars, col)) = self.focused_line() {
+            self.set_col(f(&chars, col, big));
+        }
+    }
+
+    pub fn word_forward(&mut self) {
+        self.word_move(false, next_word_start);
+    }
+
+    pub fn word_back(&mut self) {
+        self.word_move(false, prev_word_start);
+    }
+
+    pub fn word_end(&mut self) {
+        self.word_move(false, word_end_col);
+    }
+
+    /// WORD variants (`W`/`B`/`E`): whitespace-delimited, punctuation included.
+    pub fn word_forward_big(&mut self) {
+        self.word_move(true, next_word_start);
+    }
+
+    pub fn word_back_big(&mut self) {
+        self.word_move(true, prev_word_start);
+    }
+
+    pub fn word_end_big(&mut self) {
+        self.word_move(true, word_end_col);
+    }
+
+    /// Scroll each pane horizontally so its cursor column is on screen.
+    pub fn keep_cols_visible(&mut self) {
+        self.keep_side_visible(true);
+        self.keep_side_visible(false);
+    }
+
+    fn keep_side_visible(&mut self, old_side: bool) {
+        let (col, line, width) = if old_side {
+            (self.old_col, self.old_cursor, self.old_code_w)
+        } else {
+            (self.new_col, self.new_cursor, self.new_code_w)
+        };
+        let eff = clamp_col(col, self.side_text(old_side, line).chars().count());
+        let w = width.max(1);
+        let mut left = if old_side {
+            self.old_left
+        } else {
+            self.new_left
+        };
+        if eff < left {
+            left = eff;
+        } else if eff >= left + w {
+            left = eff + 1 - w;
+        }
+        left = left.min(eff);
+        if old_side {
+            self.old_left = left;
+        } else {
+            self.new_left = left;
+        }
+    }
+
     // ---- cursor-line placement (vim's zz / zt / zb) ----
 
     /// Frame the focused pane's cursor on `want_row`, keeping the other pane
@@ -460,6 +655,7 @@ impl App {
         let (old_top, new_top) = plan(c, p, self.old_total(), self.new_total(), self.viewport, row);
         self.old_top = old_top;
         self.new_top = new_top;
+        self.keep_cols_visible();
     }
 
     /// Dual of [`App::sync_from_old`] for the new side.
@@ -475,6 +671,7 @@ impl App {
         let (new_top, old_top) = plan(c, p, self.new_total(), self.old_total(), self.viewport, row);
         self.new_top = new_top;
         self.old_top = old_top;
+        self.keep_cols_visible();
     }
 
     fn load_diff(&mut self) {
@@ -534,6 +731,7 @@ impl App {
             }
             None => self.jump_to_first_hunk(),
         }
+        self.keep_cols_visible();
     }
 
     /// Put the first hunk a few lines down so there's some context above it.
@@ -582,6 +780,7 @@ impl App {
             self.new_top = t_top;
             self.old_top = o_top;
         }
+        self.keep_cols_visible();
     }
 }
 
@@ -591,6 +790,81 @@ fn clamp_line(v: isize, total: usize) -> usize {
     } else {
         v.clamp(0, total as isize - 1) as usize
     }
+}
+
+/// Clamp a goal column to a line of `len` chars (an empty line uses column 0).
+fn clamp_col(col: usize, len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        col.min(len - 1)
+    }
+}
+
+/// Vim's word char. `big` selects a WORD: any run of non-blank characters
+/// (`W`/`B`/`E`), versus a word of letters, digits and underscore (`w`/`b`/`e`).
+fn is_word_char(c: char, big: bool) -> bool {
+    if big {
+        !c.is_whitespace()
+    } else {
+        c.is_alphanumeric() || c == '_'
+    }
+}
+
+/// Start of the next word/WORD at/after `col` (vim's `w`/`W`), clamped to the
+/// line.
+fn next_word_start(chars: &[char], col: usize, big: bool) -> usize {
+    let n = chars.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut i = col.min(n - 1);
+    while i < n && is_word_char(chars[i], big) {
+        i += 1;
+    }
+    while i < n && !is_word_char(chars[i], big) {
+        i += 1;
+    }
+    i.min(n - 1)
+}
+
+/// Start of the previous word/WORD before `col` (vim's `b`/`B`).
+fn prev_word_start(chars: &[char], col: usize, big: bool) -> usize {
+    let n = chars.len();
+    if n == 0 || col == 0 {
+        return 0;
+    }
+    let mut i = col.min(n - 1) - 1;
+    while i > 0 && !is_word_char(chars[i], big) {
+        i -= 1;
+    }
+    while i > 0 && is_word_char(chars[i - 1], big) {
+        i -= 1;
+    }
+    i
+}
+
+/// End of the word/WORD at/after `col` (vim's `e`/`E`), always advancing off a
+/// word end.
+fn word_end_col(chars: &[char], col: usize, big: bool) -> usize {
+    let n = chars.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut i = col.min(n - 1);
+    if i + 1 >= n || !is_word_char(chars[i], big) || !is_word_char(chars[i + 1], big) {
+        i += 1;
+    }
+    while i < n && !is_word_char(chars[i], big) {
+        i += 1;
+    }
+    if i >= n {
+        return n - 1;
+    }
+    while i + 1 < n && is_word_char(chars[i + 1], big) {
+        i += 1;
+    }
+    i
 }
 
 /// One scroll-view step: the row to place the cursor on, and how many lines to
@@ -671,6 +945,40 @@ fn place_at(
     (c - row, p.saturating_sub(row).min(o_max))
 }
 
+/// Construct an app with just diff rows, for view rendering tests.
+#[cfg(test)]
+pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
+    let (new_of_old, old_of_new) = model::line_maps(&rows);
+    App {
+        repo: None,
+        files: Vec::new(),
+        tree: Vec::new(),
+        file_row: Vec::new(),
+        selected: 0,
+        file_scroll: 0,
+        rows,
+        old_top: 0,
+        new_top: 0,
+        old_cursor: 0,
+        new_cursor: 0,
+        old_col: 0,
+        new_col: 0,
+        old_left: 0,
+        new_left: 0,
+        focus: Focus::Old,
+        zoom: None,
+        show_files: true,
+        last_diff: Focus::Old,
+        viewport,
+        old_code_w: 1,
+        new_code_w: 1,
+        new_of_old,
+        old_of_new,
+        view_state: HashMap::new(),
+        message: String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,11 +998,17 @@ mod tests {
             new_top: 0,
             old_cursor: 0,
             new_cursor: 0,
+            old_col: 0,
+            new_col: 0,
+            old_left: 0,
+            new_left: 0,
             focus: Focus::Old,
             zoom: None,
             show_files: true,
             last_diff: Focus::Old,
             viewport,
+            old_code_w: 1,
+            new_code_w: 1,
             new_of_old,
             old_of_new,
             view_state: HashMap::new(),
@@ -702,7 +1016,7 @@ mod tests {
         }
     }
 
-    /// Two changed lines split by context, so `n`/`p` have somewhere to go:
+    /// Two changed lines split by context, so `]c`/`[c` have somewhere to go:
     /// old/new line 3 (`d`→`D`) and line 10 (`k`→`K`).
     fn two_hunks() -> Vec<DiffRow> {
         vec![
@@ -886,6 +1200,90 @@ mod tests {
         assert_eq!(app.new_cursor, app.new_total() - 1);
         app.top();
         assert_eq!(app.new_cursor, 0);
+    }
+
+    #[test]
+    fn word_motions_walk_a_line() {
+        let chars: Vec<char> = "foo bar_baz  qux".chars().collect();
+        assert_eq!(next_word_start(&chars, 0, false), 4);
+        assert_eq!(next_word_start(&chars, 4, false), 13);
+        assert_eq!(prev_word_start(&chars, 4, false), 0);
+        assert_eq!(prev_word_start(&chars, 13, false), 4);
+        assert_eq!(word_end_col(&chars, 0, false), 2);
+        assert_eq!(word_end_col(&chars, 2, false), 10);
+    }
+
+    #[test]
+    fn capital_word_motions_are_whitespace_delimited() {
+        // `w` stops on punctuation; `W` treats a whole non-blank run as one.
+        let chars: Vec<char> = "foo(bar, baz)".chars().collect();
+        assert_eq!(next_word_start(&chars, 0, false), 4); // "bar"
+        assert_eq!(next_word_start(&chars, 0, true), 9); // "baz)"
+        assert_eq!(word_end_col(&chars, 0, false), 2); // end of "foo"
+        assert_eq!(word_end_col(&chars, 0, true), 7); // end of "foo(bar,"
+        assert_eq!(prev_word_start(&chars, 9, true), 0);
+    }
+
+    #[test]
+    fn line_and_word_motions_move_the_column() {
+        let mut app = app_with(vec![DiffRow::Ctx("foo bar".into())], 10);
+        app.focus = Focus::Old;
+        app.old_code_w = 8;
+        app.line_end();
+        assert_eq!(app.cursor_col(true), 6);
+        app.line_start();
+        assert_eq!(app.cursor_col(true), 0);
+        app.word_forward();
+        assert_eq!(app.cursor_col(true), 4);
+        app.word_end();
+        assert_eq!(app.cursor_col(true), 6);
+        app.word_back();
+        assert_eq!(app.cursor_col(true), 4);
+    }
+
+    #[test]
+    fn caret_goes_to_the_first_non_blank() {
+        let mut app = app_with(vec![DiffRow::Ctx("    x".into())], 10);
+        app.focus = Focus::Old;
+        app.old_code_w = 8;
+        app.line_first_non_blank();
+        assert_eq!(app.cursor_col(true), 4);
+    }
+
+    #[test]
+    fn hjkl_move_by_line_and_column() {
+        let mut app = app_with(
+            vec![DiffRow::Ctx("abc".into()), DiffRow::Ctx("de".into())],
+            10,
+        );
+        app.focus = Focus::Old;
+        app.old_code_w = 8;
+        app.col_right();
+        app.col_right();
+        assert_eq!(app.cursor_col(true), 2);
+        // Clamped at the line end.
+        app.col_right();
+        assert_eq!(app.cursor_col(true), 2);
+        app.col_left();
+        assert_eq!(app.cursor_col(true), 1);
+        // `j` keeps the goal column, clamped to the shorter line.
+        app.down();
+        assert_eq!(app.old_cursor, 1);
+        assert_eq!(app.cursor_col(true), 1);
+        app.col_right();
+        assert_eq!(app.cursor_col(true), 1);
+    }
+
+    #[test]
+    fn horizontal_scroll_follows_the_cursor_column() {
+        let mut app = app_with(vec![DiffRow::Ctx("0123456789".into())], 10);
+        app.focus = Focus::Old;
+        app.old_code_w = 4;
+        app.line_end();
+        // A four-column window on column 9 starts at 6.
+        assert_eq!(app.left(true), 6);
+        app.line_start();
+        assert_eq!(app.left(true), 0);
     }
 
     #[test]
