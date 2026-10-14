@@ -22,7 +22,9 @@ cargo run -p differ -- --repo /path/to/repo   # defaults to the current director
 
 **Keys:** `1`/`2`/`3` focus a panel (files / old / new) · `Ctrl-h`/`Ctrl-l`
 cycle panels · `j`/`k` (or arrows) move · `n`/`p` next/prev hunk ·
-`PgUp`/`PgDn` page · `Home`/`g` top · `R` reload · `q`/`Esc` quit.
+`zz`/`zt`/`zb` put the cursor line at middle/top/bottom · `Ctrl-e`/`Ctrl-y`
+scroll the view a line (cursor stays) · `PgUp`/`PgDn` page · `Home`/`g` top ·
+`R` reload · `q`/`Esc` quit.
 
 ## License
 

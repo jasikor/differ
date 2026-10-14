@@ -42,6 +42,9 @@ Manual refresh for the MVP.
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor
   line; the cursor line gets one faint tint, the same in both panes.
+- **Cursor placement:** done — `zz`/`zt`/`zb` put the focused pane's cursor
+  line at the middle/top/bottom (vim-style), and `Ctrl-e`/`Ctrl-y` scroll the
+  view a line while the cursor keeps its line; the panes stay paired.
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
   data-driven, sequence-capable table.
 

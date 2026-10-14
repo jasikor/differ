@@ -33,6 +33,13 @@ pub enum Command {
     FocusPrev,
     /// Cycle focus to the next region.
     FocusNext,
+    /// Put the focused pane's cursor line at the middle / top / bottom.
+    CursorCenter,
+    CursorTop,
+    CursorBottom,
+    /// Scroll the focused pane's view one line down / up.
+    ScrollDown,
+    ScrollUp,
     Reload,
 }
 
@@ -50,6 +57,11 @@ impl Command {
             Command::Focus(focus) => app.set_focus(focus),
             Command::FocusPrev => app.focus_prev(),
             Command::FocusNext => app.focus_next(),
+            Command::CursorCenter => app.cursor_center(),
+            Command::CursorTop => app.cursor_top(),
+            Command::CursorBottom => app.cursor_bottom(),
+            Command::ScrollDown => app.scroll_down(),
+            Command::ScrollUp => app.scroll_up(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue

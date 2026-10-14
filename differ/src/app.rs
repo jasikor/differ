@@ -205,6 +205,55 @@ impl App {
         self.focus = self.focus.prev();
     }
 
+    // ---- cursor-line placement (vim's zz / zt / zb) ----
+
+    /// Frame the focused pane's cursor on `want_row`, keeping the other pane
+    /// paired. No-op on the file list, which has no cursor line.
+    fn align_cursor(&mut self, want_row: usize) {
+        match self.focus {
+            Focus::Old => self.frame(true, self.old_cursor, want_row),
+            Focus::New => self.frame(false, self.new_cursor, want_row),
+            Focus::Files => {}
+        }
+    }
+
+    pub fn cursor_center(&mut self) {
+        self.align_cursor(self.viewport / 2);
+    }
+
+    pub fn cursor_top(&mut self) {
+        self.align_cursor(0);
+    }
+
+    pub fn cursor_bottom(&mut self) {
+        self.align_cursor(self.viewport.saturating_sub(1));
+    }
+
+    // ---- scroll the view without moving the cursor line (Ctrl-e / Ctrl-y) ----
+
+    /// Scroll the focused pane's view one line down / up, keeping the cursor on
+    /// its line; the cursor is pushed along only once it would leave the window.
+    fn scroll_view(&mut self, down: bool) {
+        let (old, cursor, top) = match self.focus {
+            Focus::Old => (true, self.old_cursor, self.old_top),
+            Focus::New => (false, self.new_cursor, self.new_top),
+            Focus::Files => return,
+        };
+        let vp = self.viewport.max(1);
+        let row = cursor.saturating_sub(top);
+        let (want_row, delta) = scroll_step(row, vp, down);
+        let line = (cursor as isize + delta).max(0) as usize;
+        self.frame(old, line, want_row);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_view(true);
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_view(false);
+    }
+
     pub fn move_selection(&mut self, delta: i32) {
         if self.files.is_empty() {
             return;
@@ -406,6 +455,23 @@ fn clamp_line(v: isize, total: usize) -> usize {
     }
 }
 
+/// One scroll-view step: the row to place the cursor on, and how many lines to
+/// move the cursor itself (0 unless it would otherwise leave the window).
+fn scroll_step(row: usize, viewport: usize, down: bool) -> (usize, isize) {
+    let last = viewport.max(1) - 1;
+    if down {
+        if row == 0 {
+            (0, 1)
+        } else {
+            (row - 1, 0)
+        }
+    } else if row >= last {
+        (last, -1)
+    } else {
+        (row + 1, 0)
+    }
+}
+
 fn follow_top(top: usize, cursor: usize, viewport: usize, total: usize) -> usize {
     let vp = viewport.max(1);
     let mut t = top;
@@ -502,5 +568,16 @@ mod tests {
         let (t, o) = place_at(87, 85, 144, 86, 38, 3);
         assert_eq!(87 - t, 3);
         assert_eq!(o, 86 - 38); // other pane pinned to its end
+    }
+
+    #[test]
+    fn scroll_view_moves_the_view_until_the_cursor_hits_an_edge() {
+        // Away from the edges the cursor keeps its line and only the view moves.
+        assert_eq!(scroll_step(5, 10, true), (4, 0));
+        assert_eq!(scroll_step(5, 10, false), (6, 0));
+        // At the top, scrolling down pushes the cursor down one line.
+        assert_eq!(scroll_step(0, 10, true), (0, 1));
+        // At the bottom, scrolling up pushes the cursor up one line.
+        assert_eq!(scroll_step(9, 10, false), (9, -1));
     }
 }

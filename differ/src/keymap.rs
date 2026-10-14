@@ -60,6 +60,8 @@ impl Keymap {
         use KeyCode::*;
         let one = |c: KeyCode, cmd: Command| (vec![Key::plain(c)], cmd);
         let ctrl = |c: KeyCode, cmd: Command| (vec![Key::ctrl(c)], cmd);
+        let two =
+            |a: char, b: char, cmd: Command| (vec![Key::plain(Char(a)), Key::plain(Char(b))], cmd);
         Keymap::new(vec![
             one(Char('q'), Command::Quit),
             one(Esc, Command::Quit),
@@ -74,8 +76,15 @@ impl Keymap {
             // Cycle panels, vim-window style.
             ctrl(Char('h'), Command::FocusPrev),
             ctrl(Char('l'), Command::FocusNext),
+            // Scroll the focused pane's view a line (vim's Ctrl-e / Ctrl-y).
+            ctrl(Char('e'), Command::ScrollDown),
+            ctrl(Char('y'), Command::ScrollUp),
             one(Char('n'), Command::NextHunk),
             one(Char('p'), Command::PrevHunk),
+            // Put the cursor line at the middle / top / bottom (vim's zz/zt/zb).
+            two('z', 'z', Command::CursorCenter),
+            two('z', 't', Command::CursorTop),
+            two('z', 'b', Command::CursorBottom),
             one(PageDown, Command::PageDown),
             one(PageUp, Command::PageUp),
             one(Home, Command::Top),
@@ -155,9 +164,35 @@ mod tests {
     }
 
     #[test]
+    fn z_prefix_places_the_cursor_line() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('z')), Resolution::Pending);
+        assert_eq!(km.feed(plain('z')), Resolution::Run(Command::CursorCenter));
+        assert_eq!(km.feed(plain('z')), Resolution::Pending);
+        assert_eq!(km.feed(plain('t')), Resolution::Run(Command::CursorTop));
+        assert_eq!(km.feed(plain('z')), Resolution::Pending);
+        assert_eq!(km.feed(plain('b')), Resolution::Run(Command::CursorBottom));
+    }
+
+    #[test]
+    fn ctrl_e_and_ctrl_y_scroll() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('e'))),
+            Resolution::Run(Command::ScrollDown)
+        );
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('y'))),
+            Resolution::Run(Command::ScrollUp)
+        );
+        // Plain e/y stay free.
+        assert_eq!(km.feed(plain('e')), Resolution::None);
+    }
+
+    #[test]
     fn unknown_key_is_none() {
         let mut km = Keymap::default_bindings();
-        assert_eq!(km.feed(plain('z')), Resolution::None);
+        assert_eq!(km.feed(plain('x')), Resolution::None);
     }
 
     #[test]
