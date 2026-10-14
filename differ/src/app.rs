@@ -10,7 +10,7 @@ use crate::tree;
 const HUNK_CONTEXT: usize = 3;
 
 /// Which region receives movement keys.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Files,
     Old,
@@ -23,6 +23,14 @@ impl Focus {
             Focus::Files => Focus::Old,
             Focus::Old => Focus::New,
             Focus::New => Focus::Files,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Focus::Files => Focus::New,
+            Focus::New => Focus::Old,
+            Focus::Old => Focus::Files,
         }
     }
 }
@@ -185,8 +193,16 @@ impl App {
         }
     }
 
-    pub fn toggle_focus(&mut self) {
+    pub fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+    }
+
+    pub fn focus_next(&mut self) {
         self.focus = self.focus.next();
+    }
+
+    pub fn focus_prev(&mut self) {
+        self.focus = self.focus.prev();
     }
 
     pub fn move_selection(&mut self, delta: i32) {

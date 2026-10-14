@@ -13,7 +13,7 @@ use ratatui::crossterm::event::{self, Event};
 
 use app::App;
 use command::Outcome;
-use keymap::{Keymap, Resolution};
+use keymap::{Key, Keymap, Resolution};
 
 fn main() -> io::Result<()> {
     let repo = match parse_args() {
@@ -59,7 +59,7 @@ fn run(
     loop {
         terminal.draw(|f| view::draw(f, app))?;
         if let Event::Key(key) = event::read()? {
-            if let Resolution::Run(cmd) = keymap.feed(key.code) {
+            if let Resolution::Run(cmd) = keymap.feed(Key::from_event(key)) {
                 if cmd.run(app) == Outcome::Quit {
                     return Ok(());
                 }

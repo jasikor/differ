@@ -33,7 +33,8 @@ Manual refresh for the MVP.
   `differ` focuses on *readable diffs*.
 - **Overview rulers:** done — a 1-column map per pane (outer edges) with hunk
   cells coloured by kind and a viewport indicator, plus a `%`/line readout.
-- **Panel focus + scroll sync:** done — `Tab` cycles focus (files/old/new),
+- **Panel focus + scroll sync:** done — `1`/`2`/`3` (and `Ctrl-h`/`Ctrl-l`)
+  focus a region (files/old/new),
   `j`/`k` move in the focused region, the panes stay aligned via a line-pair
   map (`old_top`/`new_top`), and scrolling is clamped so you can't scroll past
   EOF. The manual offset (`,`/`.`) was dropped.

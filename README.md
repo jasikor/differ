@@ -20,9 +20,9 @@ that visually tie each change together across the two panes.
 cargo run -p differ -- --repo /path/to/repo   # defaults to the current directory
 ```
 
-**Keys:** `Tab` cycle focus (files / old / new) · `j`/`k` (or arrows) move ·
-`n`/`p` next/prev hunk · `PgUp`/`PgDn` page · `Home`/`g` top · `R` reload ·
-`q`/`Esc` quit.
+**Keys:** `1`/`2`/`3` focus a panel (files / old / new) · `Ctrl-h`/`Ctrl-l`
+cycle panels · `j`/`k` (or arrows) move · `n`/`p` next/prev hunk ·
+`PgUp`/`PgDn` page · `Home`/`g` top · `R` reload · `q`/`Esc` quit.
 
 ## License
 

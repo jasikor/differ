@@ -4,7 +4,7 @@
 //! `keymap.rs`. Neither touches the event loop. Most commands act on whatever
 //! region has focus (file list vs. one of the two panes).
 
-use crate::app::App;
+use crate::app::{App, Focus};
 
 /// What the event loop should do after a command runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,8 +27,12 @@ pub enum Command {
     Top,
     NextHunk,
     PrevHunk,
-    /// Cycle focus between the file list and the two panes.
-    ToggleFocus,
+    /// Focus a specific region (the number keys).
+    Focus(Focus),
+    /// Cycle focus to the previous region.
+    FocusPrev,
+    /// Cycle focus to the next region.
+    FocusNext,
     Reload,
 }
 
@@ -43,7 +47,9 @@ impl Command {
             Command::Top => app.top(),
             Command::NextHunk => app.next_hunk(),
             Command::PrevHunk => app.prev_hunk(),
-            Command::ToggleFocus => app.toggle_focus(),
+            Command::Focus(focus) => app.set_focus(focus),
+            Command::FocusPrev => app.focus_prev(),
+            Command::FocusNext => app.focus_next(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue
