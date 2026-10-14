@@ -18,19 +18,21 @@ pub enum Focus {
 }
 
 impl Focus {
-    fn next(self) -> Self {
+    /// The region one step to the right (stops at the rightmost pane).
+    fn right(self) -> Self {
         match self {
             Focus::Files => Focus::Old,
             Focus::Old => Focus::New,
-            Focus::New => Focus::Files,
+            Focus::New => Focus::New,
         }
     }
 
-    fn prev(self) -> Self {
+    /// The region one step to the left (stops at the file list).
+    fn left(self) -> Self {
         match self {
-            Focus::Files => Focus::New,
-            Focus::New => Focus::Old,
+            Focus::Files => Focus::Files,
             Focus::Old => Focus::Files,
+            Focus::New => Focus::Old,
         }
     }
 }
@@ -193,16 +195,12 @@ impl App {
         }
     }
 
-    pub fn set_focus(&mut self, focus: Focus) {
-        self.focus = focus;
-    }
-
     pub fn focus_next(&mut self) {
-        self.focus = self.focus.next();
+        self.focus = self.focus.right();
     }
 
     pub fn focus_prev(&mut self) {
-        self.focus = self.focus.prev();
+        self.focus = self.focus.left();
     }
 
     // ---- cursor-line placement (vim's zz / zt / zb) ----
@@ -568,6 +566,16 @@ mod tests {
         let (t, o) = place_at(87, 85, 144, 86, 38, 3);
         assert_eq!(87 - t, 3);
         assert_eq!(o, 86 - 38); // other pane pinned to its end
+    }
+
+    #[test]
+    fn focus_stops_at_the_panes() {
+        assert_eq!(Focus::Files.left(), Focus::Files);
+        assert_eq!(Focus::Files.right(), Focus::Old);
+        assert_eq!(Focus::Old.left(), Focus::Files);
+        assert_eq!(Focus::Old.right(), Focus::New);
+        assert_eq!(Focus::New.left(), Focus::Old);
+        assert_eq!(Focus::New.right(), Focus::New);
     }
 
     #[test]

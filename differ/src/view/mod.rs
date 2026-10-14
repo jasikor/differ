@@ -78,7 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     f.render_widget(
-        Paragraph::new(format!(" [1] {repo_name}")).style(files_style),
+        Paragraph::new(format!(" {repo_name}")).style(files_style),
         files_head,
     );
     files::draw(
@@ -89,12 +89,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         files_body,
     );
 
-    f.render_widget(Paragraph::new(" [2] old").style(old_style), old_head);
+    f.render_widget(Paragraph::new(" old").style(old_style), old_head);
     f.render_widget(
         Paragraph::new(panes::build_side(&app.rows, true, old_w)).scroll((old_top as u16, 0)),
         old_body,
     );
-    f.render_widget(Paragraph::new(" [3] new").style(new_style), new_head);
+    f.render_widget(Paragraph::new(" new").style(new_style), new_head);
     f.render_widget(
         Paragraph::new(panes::build_side(&app.rows, false, new_w)).scroll((new_top as u16, 0)),
         new_body,
@@ -188,6 +188,6 @@ fn help_line(app: &App, old_total: usize) -> String {
         format!("   {}", app.message)
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   1/2/3 or ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  PgUp/PgDn  R reload  q quit{msg}"
     )
 }

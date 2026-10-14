@@ -69,10 +69,6 @@ impl Keymap {
             one(Down, Command::Down),
             one(Char('k'), Command::Up),
             one(Up, Command::Up),
-            // Panels: digits, lazygit-style.
-            one(Char('1'), Command::Focus(crate::app::Focus::Files)),
-            one(Char('2'), Command::Focus(crate::app::Focus::Old)),
-            one(Char('3'), Command::Focus(crate::app::Focus::New)),
             // Cycle panels, vim-window style.
             ctrl(Char('h'), Command::FocusPrev),
             ctrl(Char('l'), Command::FocusNext),
@@ -133,19 +129,6 @@ mod tests {
         let mut km = Keymap::default_bindings();
         assert_eq!(km.feed(plain('q')), Resolution::Run(Command::Quit));
         assert!(km.pending().is_empty());
-    }
-
-    #[test]
-    fn digits_focus_panels() {
-        let mut km = Keymap::default_bindings();
-        assert_eq!(
-            km.feed(plain('1')),
-            Resolution::Run(Command::Focus(crate::app::Focus::Files))
-        );
-        assert_eq!(
-            km.feed(plain('3')),
-            Resolution::Run(Command::Focus(crate::app::Focus::New))
-        );
     }
 
     #[test]
