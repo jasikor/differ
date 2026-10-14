@@ -42,7 +42,8 @@ Manual refresh for the MVP.
   (first/last line of a pane, first/last file in the list), `Home` was dropped
   in favour of them.
 - **Word / line motions:** done — `h`/`j`/`k`/`l` move by column and line,
-  `w`/`b`/`e` (and the whitespace-delimited `W`/`B`/`E`) move by word and
+  `w`/`b`/`e` (and the whitespace-delimited `W`/`B`/`E`) move by word, crossing
+  line boundaries like vim, and
   `0`/`^`/`$` go to the line start / first non-blank / end, with a per-pane
   cursor column. Long
   lines pan horizontally to keep the cursor column visible (the code scrolls

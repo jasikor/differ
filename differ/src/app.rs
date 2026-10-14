@@ -478,36 +478,83 @@ impl App {
         }
     }
 
-    /// Run a word-motion over the focused line (no-op on the file list).
-    fn word_move(&mut self, big: bool, f: fn(&[char], usize, bool) -> usize) {
-        if let Some((chars, col)) = self.focused_line() {
-            self.set_col(f(&chars, col, big));
+    /// Run a word motion over the focused side, crossing line boundaries like
+    /// vim (line breaks act as non-word separators).
+    fn word_move(&mut self, big: bool, f: fn(&[FlatChar], usize, bool) -> usize) {
+        let old_side = match self.focus {
+            Focus::Old => true,
+            Focus::New => false,
+            Focus::Files => return,
+        };
+        let (flat, cur) = self.side_flat(old_side);
+        if flat.is_empty() {
+            return;
+        }
+        let dest = f(&flat, cur, big);
+        let (line, col) = (flat[dest].0, flat[dest].1);
+        if old_side {
+            self.old_cursor = line;
+            self.old_col = col;
+            self.sync_from_old();
+        } else {
+            self.new_cursor = line;
+            self.new_col = col;
+            self.sync_from_new();
         }
     }
 
+    /// One side's text as a flat char sequence plus the cursor's index in it.
+    /// A sentinel `'\n'` is appended after every line so word motions cannot
+    /// run a word across a line break.
+    fn side_flat(&self, old_side: bool) -> (Vec<FlatChar>, usize) {
+        let (cur_line, cur_col) = if old_side {
+            (self.old_cursor, self.old_col)
+        } else {
+            (self.new_cursor, self.new_col)
+        };
+        let mut flat: Vec<FlatChar> = Vec::new();
+        let mut cursor = 0usize;
+        let mut line = 0usize;
+        for r in &self.rows {
+            let Some(text) = row_text(r, old_side) else {
+                continue;
+            };
+            let chars: Vec<char> = text.chars().collect();
+            if line == cur_line {
+                cursor = flat.len() + clamp_col(cur_col, chars.len());
+            }
+            for (col, ch) in chars.iter().enumerate() {
+                flat.push((line, col, *ch));
+            }
+            flat.push((line, chars.len(), '\n'));
+            line += 1;
+        }
+        (flat, cursor)
+    }
+
     pub fn word_forward(&mut self) {
-        self.word_move(false, next_word_start);
+        self.word_move(false, flat_next_word);
     }
 
     pub fn word_back(&mut self) {
-        self.word_move(false, prev_word_start);
+        self.word_move(false, flat_prev_word);
     }
 
     pub fn word_end(&mut self) {
-        self.word_move(false, word_end_col);
+        self.word_move(false, flat_word_end);
     }
 
     /// WORD variants (`W`/`B`/`E`): whitespace-delimited, punctuation included.
     pub fn word_forward_big(&mut self) {
-        self.word_move(true, next_word_start);
+        self.word_move(true, flat_next_word);
     }
 
     pub fn word_back_big(&mut self) {
-        self.word_move(true, prev_word_start);
+        self.word_move(true, flat_prev_word);
     }
 
     pub fn word_end_big(&mut self) {
-        self.word_move(true, word_end_col);
+        self.word_move(true, flat_word_end);
     }
 
     /// Scroll each pane horizontally so its cursor column is on screen.
@@ -1034,6 +1081,10 @@ impl App {
     }
 }
 
+/// A flat `(line, col, char)` code position. Each line ends with a `'\n'`
+/// sentinel so word motions cannot span a line break.
+type FlatChar = (usize, usize, char);
+
 fn clamp_line(v: isize, total: usize) -> usize {
     if total == 0 {
         0
@@ -1061,60 +1112,71 @@ fn is_word_char(c: char, big: bool) -> bool {
     }
 }
 
-/// Start of the next word/WORD at/after `col` (vim's `w`/`W`), clamped to the
-/// line.
-fn next_word_start(chars: &[char], col: usize, big: bool) -> usize {
-    let n = chars.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut i = col.min(n - 1);
-    while i < n && is_word_char(chars[i], big) {
+/// Start of the next word/WORD after `start` (vim's `w`/`W`). Operates on a
+/// flat list of `(line, col, char)` with a `'\n'` sentinel after each line, so
+/// it crosses line boundaries.
+fn flat_next_word(flat: &[FlatChar], start: usize, big: bool) -> usize {
+    let n = flat.len();
+    let mut i = start.min(n - 1);
+    while i < n && is_word_char(flat[i].2, big) {
         i += 1;
     }
-    while i < n && !is_word_char(chars[i], big) {
-        i += 1;
-    }
-    i.min(n - 1)
-}
-
-/// Start of the previous word/WORD before `col` (vim's `b`/`B`).
-fn prev_word_start(chars: &[char], col: usize, big: bool) -> usize {
-    let n = chars.len();
-    if n == 0 || col == 0 {
-        return 0;
-    }
-    let mut i = col.min(n - 1) - 1;
-    while i > 0 && !is_word_char(chars[i], big) {
-        i -= 1;
-    }
-    while i > 0 && is_word_char(chars[i - 1], big) {
-        i -= 1;
-    }
-    i
-}
-
-/// End of the word/WORD at/after `col` (vim's `e`/`E`), always advancing off a
-/// word end.
-fn word_end_col(chars: &[char], col: usize, big: bool) -> usize {
-    let n = chars.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut i = col.min(n - 1);
-    if i + 1 >= n || !is_word_char(chars[i], big) || !is_word_char(chars[i + 1], big) {
-        i += 1;
-    }
-    while i < n && !is_word_char(chars[i], big) {
+    while i < n && !is_word_char(flat[i].2, big) {
         i += 1;
     }
     if i >= n {
-        return n - 1;
+        return last_real(flat, start);
     }
-    while i + 1 < n && is_word_char(chars[i + 1], big) {
+    i
+}
+
+/// Start of the previous word/WORD before `start` (vim's `b`/`B`).
+fn flat_prev_word(flat: &[FlatChar], start: usize, big: bool) -> usize {
+    let n = flat.len();
+    if start == 0 || n == 0 {
+        return start.min(n.saturating_sub(1));
+    }
+    let mut i = start - 1;
+    while i > 0 && !is_word_char(flat[i].2, big) {
+        i -= 1;
+    }
+    if !is_word_char(flat[i].2, big) {
+        return start; // nothing before: stay put
+    }
+    while i > 0 && is_word_char(flat[i - 1].2, big) {
+        i -= 1;
+    }
+    i
+}
+
+/// End of the word/WORD at/after `start` (vim's `e`/`E`), always advancing off
+/// a word end and crossing line boundaries.
+fn flat_word_end(flat: &[FlatChar], start: usize, big: bool) -> usize {
+    let n = flat.len();
+    if n == 0 {
+        return start;
+    }
+    let mut i = start.min(n - 1);
+    if i + 1 >= n || !is_word_char(flat[i].2, big) || !is_word_char(flat[i + 1].2, big) {
+        i += 1;
+    }
+    while i < n && !is_word_char(flat[i].2, big) {
+        i += 1;
+    }
+    if i >= n {
+        return last_real(flat, start);
+    }
+    while i + 1 < n && is_word_char(flat[i + 1].2, big) {
         i += 1;
     }
     i
+}
+
+/// The last index in `flat` that is a real character (not a line sentinel).
+fn last_real(flat: &[FlatChar], fallback: usize) -> usize {
+    flat.iter()
+        .rposition(|(_, _, ch)| *ch != '\n')
+        .unwrap_or(fallback)
 }
 
 /// The code text a row shows on a side, or `None` if the row is exclusive to
@@ -1508,26 +1570,62 @@ mod tests {
         assert_eq!(app.new_cursor, 0);
     }
 
+    /// A flat char list like `App::side_flat`, for the word-motion tests.
+    fn flat(lines: &[&str]) -> Vec<FlatChar> {
+        let mut out = Vec::new();
+        for (line, text) in lines.iter().enumerate() {
+            for (col, ch) in text.chars().enumerate() {
+                out.push((line, col, ch));
+            }
+            out.push((line, text.chars().count(), '\n'));
+        }
+        out
+    }
+
     #[test]
     fn word_motions_walk_a_line() {
-        let chars: Vec<char> = "foo bar_baz  qux".chars().collect();
-        assert_eq!(next_word_start(&chars, 0, false), 4);
-        assert_eq!(next_word_start(&chars, 4, false), 13);
-        assert_eq!(prev_word_start(&chars, 4, false), 0);
-        assert_eq!(prev_word_start(&chars, 13, false), 4);
-        assert_eq!(word_end_col(&chars, 0, false), 2);
-        assert_eq!(word_end_col(&chars, 2, false), 10);
+        let f = flat(&["foo bar_baz  qux"]);
+        let at = |i: usize| (f[i].0, f[i].1);
+        assert_eq!(at(flat_next_word(&f, 0, false)), (0, 4));
+        assert_eq!(at(flat_next_word(&f, 4, false)), (0, 13));
+        assert_eq!(at(flat_prev_word(&f, 4, false)), (0, 0));
+        assert_eq!(at(flat_prev_word(&f, 13, false)), (0, 4));
+        assert_eq!(at(flat_word_end(&f, 0, false)), (0, 2));
+        assert_eq!(at(flat_word_end(&f, 2, false)), (0, 10));
     }
 
     #[test]
     fn capital_word_motions_are_whitespace_delimited() {
         // `w` stops on punctuation; `W` treats a whole non-blank run as one.
-        let chars: Vec<char> = "foo(bar, baz)".chars().collect();
-        assert_eq!(next_word_start(&chars, 0, false), 4); // "bar"
-        assert_eq!(next_word_start(&chars, 0, true), 9); // "baz)"
-        assert_eq!(word_end_col(&chars, 0, false), 2); // end of "foo"
-        assert_eq!(word_end_col(&chars, 0, true), 7); // end of "foo(bar,"
-        assert_eq!(prev_word_start(&chars, 9, true), 0);
+        let f = flat(&["foo(bar, baz)"]);
+        let at = |i: usize| (f[i].0, f[i].1);
+        assert_eq!(at(flat_next_word(&f, 0, false)), (0, 4)); // "bar"
+        assert_eq!(at(flat_next_word(&f, 0, true)), (0, 9)); // "baz)"
+        assert_eq!(at(flat_word_end(&f, 0, false)), (0, 2)); // end of "foo"
+        assert_eq!(at(flat_word_end(&f, 0, true)), (0, 7)); // end of "foo(bar,"
+        assert_eq!(at(flat_prev_word(&f, 9, true)), (0, 0));
+    }
+
+    #[test]
+    fn word_motions_cross_lines() {
+        let f = flat(&["foo", "bar baz", "qux"]);
+        let at = |i: usize| (f[i].0, f[i].1);
+        let find = |line: usize, col: usize| {
+            f.iter()
+                .position(|&(l, c, _)| l == line && c == col)
+                .unwrap()
+        };
+        // `w` from "foo" reaches "bar" on the next line.
+        assert_eq!(at(flat_next_word(&f, 2, false)), (1, 0));
+        // `e` stops at the end of "foo", then at the end of "bar".
+        let e = flat_word_end(&f, 0, false);
+        assert_eq!(at(e), (0, 2));
+        let e2 = flat_word_end(&f, e, false);
+        assert_eq!(at(e2), (1, 2));
+        assert_eq!(at(flat_word_end(&f, e2, false)), (1, 6)); // "baz"
+                                                              // `b` from "baz" reaches "bar", then "foo" on the previous line.
+        assert_eq!(at(flat_prev_word(&f, find(1, 4), false)), (1, 0));
+        assert_eq!(at(flat_prev_word(&f, find(1, 0), false)), (0, 0));
     }
 
     #[test]
