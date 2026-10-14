@@ -82,6 +82,8 @@ impl Keymap {
             ctrl(Char('z'), Command::ToggleZoom),
             // Space is the leader; Space e toggles the file (git) panel.
             two(' ', 'e', Command::ToggleFiles),
+            // s jumps to a visible character (flash-style).
+            one(Char('s'), Command::StartJump),
             // Hunk navigation, vim-diff style.
             two(']', 'c', Command::NextHunk),
             two('[', 'c', Command::PrevHunk),
@@ -255,6 +257,12 @@ mod tests {
         assert_eq!(km.feed(plain('c')), Resolution::Run(Command::PrevHunk));
         // The old single-key hunk motions are gone.
         assert_eq!(km.feed(plain('n')), Resolution::None);
+    }
+
+    #[test]
+    fn s_starts_a_jump() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('s')), Resolution::Run(Command::StartJump));
     }
 
     #[test]

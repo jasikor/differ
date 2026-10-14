@@ -48,6 +48,14 @@ Manual refresh for the MVP.
   lines pan horizontally to keep the cursor column visible (the code scrolls
   under a fixed number margin, and the in-pane rails/arrows follow it, clamped
   to the pane). Hunk navigation moved from `n`/`p` to Vim-diff `]c`/`[c`.
+- **Jump (`s`):** done — flash.nvim-faithful (`s` is LazyVim's Flash binding):
+  type a pattern of any length (case-insensitive) and labels appear on the
+  visible matches, nearest-first, from flash's home-row-first alphabet
+  `asdfghjklqwertyuiopzxcvbnm` plus uppercase (single characters only; matches
+  past 52 stay unlabelled). A label is never a pattern continuation (flash's
+  `skip` rule), so you can keep typing to narrow the search — that is how the
+  surplus matches stay reachable. Labels draw after the match; `Enter` jumps to
+  the nearest, `<BS>` edits the pattern, `Esc` cancels.
 - **Cursor:** done — each pane has a cursor (the sync anchor); the viewport
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor

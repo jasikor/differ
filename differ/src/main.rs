@@ -59,7 +59,13 @@ fn run(
     loop {
         terminal.draw(|f| view::draw(f, app))?;
         if let Event::Key(key) = event::read()? {
-            if let Resolution::Run(cmd) = keymap.feed(Key::from_event(key)) {
+            let key = Key::from_event(key);
+            // The `s` jump captures keys directly while it is active.
+            if app.jump_active() {
+                app.jump_key(key.code);
+                continue;
+            }
+            if let Resolution::Run(cmd) = keymap.feed(key) {
                 if cmd.run(app) == Outcome::Quit {
                     return Ok(());
                 }

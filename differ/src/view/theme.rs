@@ -121,6 +121,12 @@ pub const CURSOR_ACTIVE: Color = Color::Rgb(0xff, 0xbf, 0x00);
 pub const CURSOR_INACTIVE: Color = Color::Rgb(0x4e, 0x57, 0x63);
 pub const CURSOR_LINE: Color = Color::Rgb(0x1b, 0x1f, 0x24);
 
+// Jump labels (`s`): a bright tag drawn after each visible match, and a tint on
+// the matched character.
+pub const JUMP_BG: Color = Color::Rgb(0xf7, 0x76, 0x8e);
+pub const JUMP_FG: Color = Color::Rgb(0x1b, 0x1f, 0x24);
+pub const JUMP_MATCH_BG: Color = Color::Rgb(0x54, 0x48, 0x6a);
+
 /// Lighten a colour by `d` per channel (keeps the hue of change tints).
 pub fn brighten(c: Color, d: u8) -> Color {
     match c {

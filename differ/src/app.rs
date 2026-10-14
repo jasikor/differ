@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use ratatui::crossterm::event::KeyCode;
+
 use crate::git::{self, Repo};
 use crate::model::{self, DiffRow};
 use crate::tree;
@@ -44,6 +46,28 @@ struct ViewState {
     new_cursor: usize,
     old_top: usize,
     new_top: usize,
+}
+
+/// The `s` jump: press it, type a pattern, then a label to teleport there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JumpState {
+    #[default]
+    Idle,
+    /// Typing a pattern / choosing a label (flash's jump mode).
+    Active,
+}
+
+/// One visible occurrence of the jump target, with its label and position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JumpMatch {
+    pub old_side: bool,
+    /// Side line index (the pane's own line numbering).
+    pub line: usize,
+    /// Character column within the line.
+    pub col: usize,
+    /// The single-character label, absent when there were more matches than
+    /// labels (flash leaves those unlabelled).
+    pub label: Option<char>,
 }
 
 pub struct App {
@@ -89,6 +113,10 @@ pub struct App {
     old_of_new: Vec<usize>,
     /// Saved view position per file path.
     view_state: HashMap<String, ViewState>,
+    /// The `s` jump state and its matches.
+    jump: JumpState,
+    jump_pattern: String,
+    jump_matches: Vec<JumpMatch>,
     pub message: String,
 }
 
@@ -120,6 +148,9 @@ impl App {
             new_of_old: Vec::new(),
             old_of_new: Vec::new(),
             view_state: HashMap::new(),
+            jump: JumpState::Idle,
+            jump_pattern: String::new(),
+            jump_matches: Vec::new(),
             message: String::new(),
         };
         match Repo::discover_in(start) {
@@ -511,6 +542,225 @@ impl App {
         }
     }
 
+    // ---- `s` jump (flash.nvim-style) ----
+
+    pub fn jump_state(&self) -> JumpState {
+        self.jump
+    }
+
+    pub fn jump_active(&self) -> bool {
+        self.jump != JumpState::Idle
+    }
+
+    /// The search pattern typed so far.
+    pub fn jump_pattern(&self) -> &str {
+        &self.jump_pattern
+    }
+
+    pub fn jump_matches(&self) -> &[JumpMatch] {
+        &self.jump_matches
+    }
+
+    /// The pattern's length in characters (how much to tint after a match).
+    pub fn jump_pattern_len(&self) -> usize {
+        self.jump_pattern.chars().count()
+    }
+
+    /// Begin a jump. Needs a diff pane focused (the file list has no columns).
+    pub fn start_jump(&mut self) {
+        if matches!(self.focus, Focus::Files) {
+            self.message = "s: focus a diff pane first".into();
+            return;
+        }
+        self.jump = JumpState::Active;
+        self.jump_pattern.clear();
+        self.jump_matches.clear();
+        self.message.clear();
+    }
+
+    /// Route a key to the jump mode. Returns true if it was consumed.
+    ///
+    /// Mirrors flash: every character either picks a label or extends the
+    /// pattern, so you can keep typing to narrow the search.
+    pub fn jump_key(&mut self, code: KeyCode) -> bool {
+        if self.jump == JumpState::Idle {
+            return false;
+        }
+        match code {
+            KeyCode::Esc => self.cancel_jump(),
+            KeyCode::Enter => self.jump_to_first(),
+            KeyCode::Backspace => {
+                self.jump_pattern.pop();
+                self.refresh_jump();
+            }
+            KeyCode::Char(c) => self.jump_char(c),
+            _ => self.cancel_jump(),
+        }
+        true
+    }
+
+    fn cancel_jump(&mut self) {
+        self.jump = JumpState::Idle;
+        self.jump_pattern.clear();
+        self.jump_matches.clear();
+    }
+
+    fn jump_char(&mut self, c: char) {
+        // A character is a label if one is currently assigned to it; labels are
+        // never pattern continuations (see `jump_labels`), so this is unambiguous.
+        if let Some(m) = self.jump_matches.iter().find(|m| m.label == Some(c)) {
+            let m = m.clone();
+            self.jump_to(&m);
+            self.cancel_jump();
+            return;
+        }
+        self.jump_pattern.push(c);
+        self.refresh_jump();
+    }
+
+    fn jump_to_first(&mut self) {
+        if let Some(m) = self.jump_matches.first().cloned() {
+            self.jump_to(&m);
+        }
+        self.cancel_jump();
+    }
+
+    /// Recompute matches and labels for the current pattern.
+    fn refresh_jump(&mut self) {
+        self.jump_matches = self.visible_matches();
+        if self.jump_matches.is_empty() {
+            if !self.jump_pattern.is_empty() {
+                self.message = format!("no match: {}", self.jump_pattern);
+            }
+            return;
+        }
+        let (line, col, width) = match self.focus {
+            Focus::Old => (self.old_cursor, self.cursor_col(true), self.old_code_w),
+            Focus::New => (self.new_cursor, self.cursor_col(false), self.new_code_w),
+            Focus::Files => (0, 0, 1),
+        };
+        sort_by_distance(&mut self.jump_matches, line, col, width.max(1));
+        let labels = self.jump_labels();
+        assign_labels(&mut self.jump_matches, labels);
+        self.message.clear();
+    }
+
+    /// Available labels for the current pattern: flash's alphabet minus any
+    /// character that follows an occurrence of the pattern (those must stay
+    /// typeable so the pattern can be extended).
+    fn jump_labels(&self) -> Vec<char> {
+        let mut labels = jump_label_alphabet();
+        if self.jump_pattern.is_empty() {
+            return labels;
+        }
+        let pattern: Vec<char> = self.jump_pattern.chars().collect();
+        let old_side = match self.focus {
+            Focus::Old => true,
+            Focus::New => false,
+            Focus::Files => return labels,
+        };
+        let (top, _, _) = if old_side {
+            (self.old_top, self.old_left, self.old_code_w)
+        } else {
+            (self.new_top, self.new_left, self.new_code_w)
+        };
+        let bottom = top + self.viewport.max(1);
+        let mut blocked: Vec<char> = Vec::new();
+        for (row, r) in self.rows.iter().enumerate() {
+            if row < top || row >= bottom {
+                continue;
+            }
+            let Some(text) = row_text(r, old_side) else {
+                continue;
+            };
+            let chars: Vec<char> = text.chars().collect();
+            let mut i = 0;
+            while i + pattern.len() <= chars.len() {
+                if chars_match(&chars[i..i + pattern.len()], &pattern) {
+                    if let Some(&next) = chars.get(i + pattern.len()) {
+                        let lower = next.to_ascii_lowercase();
+                        if !blocked.contains(&lower) {
+                            blocked.push(lower);
+                        }
+                    }
+                    i += pattern.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        labels.retain(|c| !blocked.contains(&c.to_ascii_lowercase()));
+        labels
+    }
+
+    /// Every visible occurrence of the pattern (case-insensitive) in the focused
+    /// pane's code window, in reading order.
+    fn visible_matches(&self) -> Vec<JumpMatch> {
+        let old_side = match self.focus {
+            Focus::Old => true,
+            Focus::New => false,
+            Focus::Files => return Vec::new(),
+        };
+        let pattern: Vec<char> = self.jump_pattern.chars().collect();
+        let plen = pattern.len();
+        let (top, left, width) = if old_side {
+            (self.old_top, self.old_left, self.old_code_w)
+        } else {
+            (self.new_top, self.new_left, self.new_code_w)
+        };
+        let bottom = top + self.viewport.max(1);
+        let right = left + width;
+        let mut out = Vec::new();
+        if plen == 0 {
+            return out;
+        }
+        let mut line = 0usize;
+        for (row, r) in self.rows.iter().enumerate() {
+            let Some(text) = row_text(r, old_side) else {
+                continue;
+            };
+            if row >= top && row < bottom {
+                let chars: Vec<char> = text.chars().collect();
+                let mut i = 0;
+                while i + plen <= chars.len() {
+                    // Keep the whole match (and its trailing label) on screen.
+                    if i >= left && i + plen < right && chars_match(&chars[i..i + plen], &pattern) {
+                        out.push(JumpMatch {
+                            old_side,
+                            line,
+                            col: i,
+                            label: None,
+                        });
+                        i += plen;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            line += 1;
+        }
+        out
+    }
+
+    /// Move the cursor to a match and bring it into view (both axes).
+    fn jump_to(&mut self, m: &JumpMatch) {
+        let last = if m.old_side {
+            self.old_total()
+        } else {
+            self.new_total()
+        };
+        let line = m.line.min(last.saturating_sub(1));
+        if m.old_side {
+            self.old_cursor = line;
+            self.old_col = m.col;
+            self.sync_from_old();
+        } else {
+            self.new_cursor = line;
+            self.new_col = m.col;
+            self.sync_from_new();
+        }
+    }
+
     // ---- cursor-line placement (vim's zz / zt / zb) ----
 
     /// Frame the focused pane's cursor on `want_row`, keeping the other pane
@@ -867,6 +1117,56 @@ fn word_end_col(chars: &[char], col: usize, big: bool) -> usize {
     i
 }
 
+/// The code text a row shows on a side, or `None` if the row is exclusive to
+/// the other side.
+fn row_text(row: &DiffRow, old_side: bool) -> Option<&str> {
+    match row {
+        DiffRow::Ctx(t) => Some(t),
+        DiffRow::Chg(o, n) => Some(if old_side { o } else { n }),
+        DiffRow::Del(t) => old_side.then_some(t),
+        DiffRow::Ins(t) => (!old_side).then_some(t),
+    }
+}
+
+/// flash.nvim's label alphabet (`Config.labels`): home-row first.
+const JUMP_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
+
+/// The full label list: the alphabet plus its uppercase, giving 52 single
+/// characters (flash's `label.uppercase = true`).
+fn jump_label_alphabet() -> Vec<char> {
+    let mut out: Vec<char> = JUMP_LABELS.chars().collect();
+    out.extend(JUMP_LABELS.to_uppercase().chars());
+    out
+}
+
+/// Order matches by flash's distance metric: a linear position
+/// (`line * width + col`) measured from the cursor, so nearer rows dominate and
+/// nearer columns win ties.
+fn sort_by_distance(matches: &mut [JumpMatch], line: usize, col: usize, width: usize) {
+    let from = line * width + col;
+    matches.sort_by_key(|m| {
+        let pos = m.line * width + m.col;
+        (pos.abs_diff(from), m.line, m.col)
+    });
+}
+
+/// Label matches nearest-first with the available single characters; anything
+/// past the labels stays unlabelled (flash does not use multi-character labels).
+fn assign_labels(matches: &mut [JumpMatch], labels: Vec<char>) {
+    for (i, m) in matches.iter_mut().enumerate() {
+        m.label = labels.get(i).copied();
+    }
+}
+
+/// Case-insensitive comparison of a text slice against a pattern.
+fn chars_match(text: &[char], pattern: &[char]) -> bool {
+    text.len() == pattern.len()
+        && text
+            .iter()
+            .zip(pattern)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
 /// One scroll-view step: the row to place the cursor on, and how many lines to
 /// move the cursor itself (0 unless it would otherwise leave the window).
 fn scroll_step(row: usize, viewport: usize, down: bool) -> (usize, isize) {
@@ -975,6 +1275,9 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         new_of_old,
         old_of_new,
         view_state: HashMap::new(),
+        jump: JumpState::Idle,
+        jump_pattern: String::new(),
+        jump_matches: Vec::new(),
         message: String::new(),
     }
 }
@@ -1012,6 +1315,9 @@ mod tests {
             new_of_old,
             old_of_new,
             view_state: HashMap::new(),
+            jump: JumpState::Idle,
+            jump_pattern: String::new(),
+            jump_matches: Vec::new(),
             message: String::new(),
         }
     }
@@ -1222,6 +1528,120 @@ mod tests {
         assert_eq!(word_end_col(&chars, 0, false), 2); // end of "foo"
         assert_eq!(word_end_col(&chars, 0, true), 7); // end of "foo(bar,"
         assert_eq!(prev_word_start(&chars, 9, true), 0);
+    }
+
+    #[test]
+    fn jump_labels_follow_flash() {
+        // Home-row-first alphabet, then uppercase: 52 single-character labels.
+        let labels = jump_label_alphabet();
+        assert_eq!(labels.len(), 52);
+        assert_eq!(labels[0], 'a');
+        assert_eq!(labels[1], 's');
+        assert_eq!(labels[25], 'm');
+        assert_eq!(labels[26], 'A');
+
+        // Matches past the alphabet stay unlabelled.
+        let mut matches: Vec<JumpMatch> = (0..54)
+            .map(|i| JumpMatch {
+                old_side: true,
+                line: 0,
+                col: i,
+                label: None,
+            })
+            .collect();
+        assign_labels(&mut matches, jump_label_alphabet());
+        assert_eq!(matches[0].label, Some('a'));
+        assert_eq!(matches[51].label, Some('M'));
+        assert_eq!(matches[52].label, None);
+    }
+
+    #[test]
+    fn jump_labels_skip_pattern_continuations() {
+        // With the pattern `l`, `e` follows every `l` in "let", so flash drops
+        // it from the labels — otherwise you could not type "le".
+        let mut app = app_with(vec![DiffRow::Ctx("let let".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_jump();
+        app.jump_key(KeyCode::Char('l'));
+        let labels = app.jump_labels();
+        assert!(!labels.contains(&'e'), "e must stay typeable");
+        assert!(!labels.contains(&'E'));
+        assert!(labels.contains(&'a'));
+        // `l` itself is also dropped (the second 'l'... actually 'e' only).
+        assert!(labels.len() >= 50);
+    }
+
+    #[test]
+    fn jump_extends_the_pattern_and_moves() {
+        let mut app = app_with(vec![DiffRow::Ctx("let x let y let".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_jump();
+        app.jump_key(KeyCode::Char('l'));
+        assert_eq!(app.jump_pattern(), "l");
+        // `e` is not a label (it follows `l`), so it extends the pattern.
+        app.jump_key(KeyCode::Char('e'));
+        assert_eq!(app.jump_pattern(), "le");
+        app.jump_key(KeyCode::Char('t'));
+        assert_eq!(app.jump_pattern(), "let");
+        assert_eq!(app.jump_matches().len(), 3);
+        // The three "let" matches, nearest-first from col 0.
+        let labels: Vec<Option<char>> = app.jump_matches().iter().map(|m| m.label).collect();
+        assert_eq!(labels, vec![Some('a'), Some('s'), Some('d')]);
+        // The second label jumps to the second "let" (col 6).
+        app.jump_key(KeyCode::Char('s'));
+        assert_eq!(app.jump_state(), JumpState::Idle);
+        assert_eq!(app.cursor_col(true), 6);
+    }
+
+    #[test]
+    fn jump_single_match_waits_for_label_or_enter() {
+        // flash's `autojump` is off: one match is labelled and waits.
+        let mut app = app_with(vec![DiffRow::Ctx("abcabc".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_jump();
+        app.jump_key(KeyCode::Char('b'));
+        assert_eq!(app.jump_matches().len(), 2);
+        assert_eq!(app.jump_matches()[0].label, Some('a'));
+        app.jump_key(KeyCode::Enter);
+        assert_eq!(app.jump_state(), JumpState::Idle);
+        assert_eq!(app.cursor_col(true), 1);
+    }
+
+    #[test]
+    fn jump_reports_no_match_but_stays_active() {
+        let mut app = app_with(vec![DiffRow::Ctx("abc".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_jump();
+        app.jump_key(KeyCode::Char('z'));
+        assert_eq!(app.jump_state(), JumpState::Active);
+        assert!(app.message.contains("no match"), "msg: {}", app.message);
+        // Backspace clears the pattern again (flash's `<BS>`).
+        app.jump_key(KeyCode::Backspace);
+        assert_eq!(app.jump_pattern(), "");
+        assert!(app.jump_matches().is_empty());
+    }
+
+    #[test]
+    fn jump_escape_cancels() {
+        let mut app = app_with(vec![DiffRow::Ctx("abc".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_jump();
+        assert!(app.jump_key(KeyCode::Esc));
+        assert_eq!(app.jump_state(), JumpState::Idle);
+    }
+
+    #[test]
+    fn jump_needs_a_diff_pane() {
+        let mut app = app_with(vec![DiffRow::Ctx("aa".into())], 5);
+        app.focus = Focus::Files;
+        app.start_jump();
+        assert_eq!(app.jump_state(), JumpState::Idle);
+        assert!(app.message.contains("focus a diff pane"));
     }
 
     #[test]

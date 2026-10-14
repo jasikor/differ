@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, JumpState};
 use crate::model;
 
 /// Width of the file-list column.
@@ -187,6 +187,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.focus == Focus::New,
     );
 
+    // Jump labels paint over everything while `s` is choosing.
+    if app.jump_state() == JumpState::Active {
+        draw_jump_labels(f, app, old_body, new_body, old_off);
+    }
+
     f.render_widget(
         Paragraph::new(help_line(app, old_kinds.len())).style(theme::dim_style()),
         help,
@@ -225,6 +230,43 @@ fn draw_cursor(f: &mut Frame, area: Rect, x_off: usize, cursor: usize, top: usiz
     }
 }
 
+/// Paint the `s` jump labels just after each visible match (flash's
+/// `label.after`), tinting the matched text so the target reads clearly.
+fn draw_jump_labels(f: &mut Frame, app: &App, old_body: Rect, new_body: Rect, old_off: usize) {
+    let plen = app.jump_pattern_len() as isize;
+    let buf = f.buffer_mut();
+    for m in app.jump_matches() {
+        let Some(label) = m.label else { continue };
+        let (body, top, base, left) = if m.old_side {
+            (old_body, app.old_top, old_off, app.left(true))
+        } else {
+            (new_body, app.new_top, theme::NEW_MARGIN, app.left(false))
+        };
+        if body.width == 0 {
+            continue;
+        }
+        let row = m.line as isize - top as isize;
+        if row < 0 || row >= body.height as isize {
+            continue;
+        }
+        let y = body.y + row as u16;
+        let start = base as isize + m.col as isize - left as isize;
+        for i in 0..plen {
+            let x = start + i;
+            if x >= 0 && x < body.width as isize {
+                buf[(body.x + x as u16, y)].set_bg(theme::JUMP_MATCH_BG);
+            }
+        }
+        let x = start + plen;
+        if x >= 0 && x < body.width as isize {
+            let cell = &mut buf[(body.x + x as u16, y)];
+            cell.set_char(label);
+            cell.set_fg(theme::JUMP_FG);
+            cell.set_bg(theme::JUMP_BG);
+        }
+    }
+}
+
 fn help_line(app: &App, old_total: usize) -> String {
     let path = app.selected_path().unwrap_or("(no file)");
     let cur = app.old_top.min(old_total);
@@ -243,8 +285,12 @@ fn help_line(app: &App, old_total: usize) -> String {
     } else {
         format!("   {}", app.message)
     };
+    let jump = match app.jump_state() {
+        JumpState::Idle => String::new(),
+        JumpState::Active => format!("   jump: /{}", app.jump_pattern()),
+    };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  s jump  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{msg}"
     )
 }
 
@@ -296,5 +342,34 @@ mod tests {
         // contains the new pane, which is not scrolled.)
         let old_code: String = row.chars().skip(3).take(app.old_code_w).collect();
         assert_eq!(old_code, "456789");
+    }
+
+    #[test]
+    fn jump_paints_labels_after_the_matches() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = test_app(vec![DiffRow::Ctx("xaxa".into())], 5);
+        app.show_files = false;
+        app.focus = Focus::Old;
+
+        let mut term = Terminal::new(TestBackend::new(24, 3)).unwrap();
+        // First draw settles the code width, then start the jump.
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        app.start_jump();
+        app.jump_key(KeyCode::Char('a'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buf = term.backend().buffer();
+        // Labels are drawn after the match: matches at col 1 and 3 -> cols 2, 4.
+        let labels: Vec<(u16, char)> = (0..24)
+            .filter(|&x| buf[(x, 1)].bg == theme::JUMP_BG)
+            .map(|x| (x, buf[(x, 1)].symbol().chars().next().unwrap()))
+            .collect();
+        // x = old body (1) + number margin (2) + label column.
+        assert_eq!(labels, vec![(5, 'a'), (7, 's')]);
+        // The matched characters themselves are tinted.
+        let matches: Vec<u16> = (0..24)
+            .filter(|&x| buf[(x, 1)].bg == theme::JUMP_MATCH_BG)
+            .collect();
+        assert_eq!(matches, vec![4, 6]);
     }
 }

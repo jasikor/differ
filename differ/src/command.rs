@@ -59,6 +59,8 @@ pub enum Command {
     ToggleZoom,
     /// Show/hide the file (git) panel.
     ToggleFiles,
+    /// Start the `s` jump: type a character, then a label to teleport there.
+    StartJump,
     Reload,
 }
 
@@ -94,6 +96,7 @@ impl Command {
             Command::ScrollUp => app.scroll_up(),
             Command::ToggleZoom => app.toggle_zoom(),
             Command::ToggleFiles => app.toggle_files(),
+            Command::StartJump => app.start_jump(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue
