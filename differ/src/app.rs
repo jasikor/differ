@@ -200,25 +200,42 @@ impl App {
     }
 
     pub fn focus_next(&mut self) {
-        self.focus = self.focus.right();
-        self.follow_zoom();
+        self.focus = self.neighbour(true);
     }
 
     pub fn focus_prev(&mut self) {
-        self.focus = self.focus.left();
-        self.follow_zoom();
+        self.focus = self.neighbour(false);
     }
 
-    /// While zoomed, the shown pane follows focus; focusing the file list (which
-    /// has no zoom) leaves zoom.
-    fn follow_zoom(&mut self) {
-        if self.zoom.is_some() {
-            self.zoom = match self.focus {
-                Focus::Old => Some(Focus::Old),
-                Focus::New => Some(Focus::New),
-                Focus::Files => None,
-            };
+    /// The pane that zoom (Ctrl-z) is currently hiding, if any.
+    fn hidden_pane(&self) -> Option<Focus> {
+        match self.zoom {
+            Some(Focus::Old) => Some(Focus::New),
+            Some(Focus::New) => Some(Focus::Old),
+            _ => None,
         }
+    }
+
+    /// The region one step left/right within the visible panels, skipping a
+    /// diff pane that zoom has hidden. Movement still stops at the ends (it
+    /// never wraps), so when the only step lands on the hidden pane with no
+    /// visible panel past it, the focus stays put.
+    ///
+    /// Zoom is deliberately left untouched: focusing the file list while a pane
+    /// is zoomed keeps that pane filling the width, and moving back returns to
+    /// it. Focus never lands on the hidden pane, so the zoom target stays valid.
+    fn neighbour(&self, right: bool) -> Focus {
+        let step = |f: Focus| if right { f.right() } else { f.left() };
+        let hidden = self.hidden_pane();
+        let mut next = step(self.focus);
+        while Some(next) == hidden {
+            let further = step(next);
+            if further == next {
+                return self.focus;
+            }
+            next = further;
+        }
+        next
     }
 
     /// Toggle single-pane zoom on the focused diff pane. No-op when the file
@@ -331,9 +348,34 @@ impl App {
         }
     }
 
+    /// Move the cursor to a hunk, scrolling only as far as needed. A hunk
+    /// already on screen just receives the cursor (and its paired line); an
+    /// off-screen one is framed with context by [`App::frame_hunk`].
+    fn goto_hunk(&mut self, h: &model::Hunk) {
+        let new_side = matches!(self.rows.get(h.row), Some(DiffRow::Ins(_)));
+        let line = if new_side { h.new } else { h.old };
+        let (top, total) = if new_side {
+            (self.new_top, self.new_total())
+        } else {
+            (self.old_top, self.old_total())
+        };
+        let vp = self.viewport.max(1);
+        if line >= top && line < top + vp {
+            if new_side {
+                self.new_cursor = line.min(total.saturating_sub(1));
+                self.sync_from_new();
+            } else {
+                self.old_cursor = line.min(total.saturating_sub(1));
+                self.sync_from_old();
+            }
+        } else {
+            self.frame_hunk(h);
+        }
+    }
+
     /// Put a hunk's first row near the top, anchoring the cursor on whichever
     /// side that row lives (an insertion starts on the new side).
-    fn goto_hunk(&mut self, h: &model::Hunk) {
+    fn frame_hunk(&mut self, h: &model::Hunk) {
         let new_side = matches!(self.rows.get(h.row), Some(DiffRow::Ins(_)));
         let line = if new_side { h.new } else { h.old };
         self.frame(!new_side, line, HUNK_CONTEXT);
@@ -432,9 +474,11 @@ impl App {
     }
 
     /// Put the first hunk a few lines down so there's some context above it.
+    /// Unlike hunk *navigation*, this always frames, even if the hunk starts
+    /// on screen.
     fn jump_to_first_hunk(&mut self) {
         if let Some(h) = self.hunks().into_iter().next() {
-            self.goto_hunk(&h);
+            self.frame_hunk(&h);
         } else {
             self.frame(true, 0, 0);
         }
@@ -568,6 +612,54 @@ fn place_at(
 mod tests {
     use super::*;
 
+    /// An [`App`] with the given diff rows and viewport, without a repository.
+    fn app_with(rows: Vec<DiffRow>, viewport: usize) -> App {
+        let (new_of_old, old_of_new) = model::line_maps(&rows);
+        App {
+            repo: None,
+            files: Vec::new(),
+            tree: Vec::new(),
+            file_row: Vec::new(),
+            selected: 0,
+            file_scroll: 0,
+            rows,
+            old_top: 0,
+            new_top: 0,
+            old_cursor: 0,
+            new_cursor: 0,
+            focus: Focus::Old,
+            zoom: None,
+            viewport,
+            new_of_old,
+            old_of_new,
+            view_state: HashMap::new(),
+            message: String::new(),
+        }
+    }
+
+    /// Two changed lines split by context, so `n`/`p` have somewhere to go:
+    /// old/new line 3 (`d`→`D`) and line 10 (`k`→`K`).
+    fn two_hunks() -> Vec<DiffRow> {
+        vec![
+            DiffRow::Ctx("a".into()),
+            DiffRow::Ctx("b".into()),
+            DiffRow::Ctx("c".into()),
+            DiffRow::Chg("d".into(), "D".into()),
+            DiffRow::Ctx("e".into()),
+            DiffRow::Ctx("f".into()),
+            DiffRow::Ctx("g".into()),
+            DiffRow::Ctx("h".into()),
+            DiffRow::Ctx("i".into()),
+            DiffRow::Ctx("j".into()),
+            DiffRow::Chg("k".into(), "K".into()),
+            DiffRow::Ctx("l".into()),
+            DiffRow::Ctx("m".into()),
+            DiffRow::Ctx("n".into()),
+            DiffRow::Ctx("o".into()),
+            DiffRow::Ctx("p".into()),
+        ]
+    }
+
     #[test]
     fn context_lines_share_a_row() {
         let (t, o) = plan(5, 5, 100, 100, 10, 5);
@@ -612,6 +704,65 @@ mod tests {
     }
 
     #[test]
+    fn zoom_keeps_focus_off_the_hidden_pane() {
+        // Zoomed on the old pane, Ctrl-l would step onto the hidden new pane, so
+        // focus stays put; Ctrl-h still reaches the (visible) file list. Moving
+        // focus to the file list leaves zoom as is, and Ctrl-l returns to the
+        // zoomed pane.
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Old;
+        app.zoom = Some(Focus::Old);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Old);
+        assert_eq!(app.zoom, Some(Focus::Old));
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Files);
+        assert_eq!(app.zoom, Some(Focus::Old));
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Old);
+        assert_eq!(app.zoom, Some(Focus::Old));
+    }
+
+    #[test]
+    fn zoom_skips_the_hidden_pane_towards_the_files() {
+        // Zoomed on the new pane, Ctrl-h steps over the hidden old pane to the
+        // file list instead of focusing something invisible, keeping zoom; the
+        // visible pane is reachable again with Ctrl-l.
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::New;
+        app.zoom = Some(Focus::New);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Files);
+        assert_eq!(app.zoom, Some(Focus::New));
+        app.focus_next();
+        assert_eq!(app.focus, Focus::New);
+        assert_eq!(app.zoom, Some(Focus::New));
+    }
+
+    #[test]
+    fn zoom_can_be_toggled_off_from_the_zoomed_pane() {
+        // The file list has no zoom target, so leaving it for the zoomed pane is
+        // how zoom is cleared.
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Files;
+        app.zoom = Some(Focus::Old);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Old);
+        app.toggle_zoom();
+        assert_eq!(app.zoom, None);
+    }
+
+    #[test]
+    fn focus_moves_normally_without_zoom() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Old;
+        app.focus_next();
+        assert_eq!(app.focus, Focus::New);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
     fn scroll_view_moves_the_view_until_the_cursor_hits_an_edge() {
         // Away from the edges the cursor keeps its line and only the view moves.
         assert_eq!(scroll_step(5, 10, true), (4, 0));
@@ -620,5 +771,51 @@ mod tests {
         assert_eq!(scroll_step(0, 10, true), (0, 1));
         // At the bottom, scrolling up pushes the cursor up one line.
         assert_eq!(scroll_step(9, 10, false), (9, -1));
+    }
+
+    #[test]
+    fn next_hunk_keeps_the_view_when_the_hunk_is_already_visible() {
+        let mut app = app_with(two_hunks(), 12);
+        app.old_cursor = 3;
+        app.new_cursor = 3;
+        app.next_hunk();
+        // Both hunks fit on screen, so only the cursor moves — no scroll.
+        assert_eq!((app.old_top, app.new_top), (0, 0));
+        assert_eq!((app.old_cursor, app.new_cursor), (10, 10));
+    }
+
+    #[test]
+    fn next_hunk_frames_an_off_screen_hunk_with_context() {
+        let mut app = app_with(two_hunks(), 6);
+        app.old_cursor = 3;
+        app.new_cursor = 3;
+        app.next_hunk();
+        // The second hunk is below the six-line window, so it is framed with
+        // HUNK_CONTEXT lines above it.
+        assert_eq!(app.old_cursor, 10);
+        assert_eq!(app.old_top, 10 - HUNK_CONTEXT);
+    }
+
+    #[test]
+    fn prev_hunk_keeps_the_view_when_the_hunk_is_already_visible() {
+        let mut app = app_with(two_hunks(), 12);
+        app.old_cursor = 10;
+        app.new_cursor = 10;
+        app.prev_hunk();
+        assert_eq!((app.old_top, app.new_top), (0, 0));
+        assert_eq!((app.old_cursor, app.new_cursor), (3, 3));
+    }
+
+    #[test]
+    fn opening_a_file_still_frames_the_first_hunk() {
+        // A first hunk that starts on screen is still framed three lines down,
+        // so a freshly opened file opens with context above the change.
+        let mut rows: Vec<DiffRow> = (0..8).map(|_| DiffRow::Ctx("ctx".into())).collect();
+        rows.push(DiffRow::Chg("old".into(), "new".into()));
+        rows.extend((0..21).map(|_| DiffRow::Ctx("ctx".into())));
+        let mut app = app_with(rows, 12);
+        app.jump_to_first_hunk();
+        assert_eq!(app.old_cursor, 8);
+        assert_eq!(app.old_top, 8 - HUNK_CONTEXT);
     }
 }

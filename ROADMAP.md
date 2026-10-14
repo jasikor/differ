@@ -45,9 +45,11 @@ Manual refresh for the MVP.
 - **Cursor placement:** done — `zz`/`zt`/`zb` put the focused pane's cursor
   line at the middle/top/bottom (vim-style), and `Ctrl-e`/`Ctrl-y` scroll the
   view a line while the cursor keeps its line; the panes stay paired.
-- **Zoom:** done — `Ctrl-w o` shows just the focused diff pane full width (the
+- **Zoom:** done — `Ctrl-z` shows just the focused diff pane full width (the
   other pane, gutter and its ruler are hidden; the in-pane rails stay); the
-  shown pane follows focus, and focusing the file list leaves zoom.
+  hidden pane drops out of the `Ctrl-h`/`Ctrl-l` cycle, and switching to the
+  file list keeps the zoom (the pane stays full width until you toggle it off
+  from the zoomed pane).
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
   data-driven, sequence-capable table.
 

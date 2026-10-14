@@ -223,6 +223,6 @@ fn help_line(app: &App, old_total: usize) -> String {
         format!("   {}", app.message)
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^W o zoom  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  PgUp/PgDn  R reload  q quit{msg}"
     )
 }
