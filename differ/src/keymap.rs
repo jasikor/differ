@@ -77,6 +77,8 @@ impl Keymap {
             ctrl(Char('y'), Command::ScrollUp),
             // Ctrl-z zooms the focused diff pane to the full width.
             ctrl(Char('z'), Command::ToggleZoom),
+            // Space is the leader; Space e toggles the file (git) panel.
+            two(' ', 'e', Command::ToggleFiles),
             one(Char('n'), Command::NextHunk),
             one(Char('p'), Command::PrevHunk),
             // Put the cursor line at the middle / top / bottom (vim's zz/zt/zb).
@@ -85,8 +87,9 @@ impl Keymap {
             two('z', 'b', Command::CursorBottom),
             one(PageDown, Command::PageDown),
             one(PageUp, Command::PageUp),
-            one(Home, Command::Top),
-            one(Char('g'), Command::Top),
+            // Jump to the top / bottom of the focused region (vim's gg / G).
+            two('g', 'g', Command::Top),
+            one(Char('G'), Command::Bottom),
             one(Char('R'), Command::Reload),
         ])
     }
@@ -181,6 +184,29 @@ mod tests {
             km.feed(Key::ctrl(KeyCode::Char('z'))),
             Resolution::Run(Command::ToggleZoom)
         );
+    }
+
+    #[test]
+    fn leader_space_e_toggles_the_file_panel() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        assert_eq!(km.feed(plain('e')), Resolution::Run(Command::ToggleFiles));
+        // A leader followed by a non-binding key clears without running.
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        assert_eq!(km.feed(plain('j')), Resolution::None);
+        // Plain e stays free.
+        assert_eq!(km.feed(plain('e')), Resolution::None);
+    }
+
+    #[test]
+    fn gg_and_shift_g_jump_to_top_and_bottom() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('g')), Resolution::Pending);
+        assert_eq!(km.feed(plain('g')), Resolution::Run(Command::Top));
+        assert_eq!(km.feed(plain('G')), Resolution::Run(Command::Bottom));
+        // A lone g followed by something else clears without running.
+        assert_eq!(km.feed(plain('g')), Resolution::Pending);
+        assert_eq!(km.feed(plain('j')), Resolution::None);
     }
 
     #[test]

@@ -67,6 +67,11 @@ pub struct App {
     /// When set, that diff pane fills the width and the other pane, gutter and
     /// its ruler are hidden.
     pub zoom: Option<Focus>,
+    /// Whether the file (git) panel is shown. Hidden, the diff panes take the
+    /// full width and the panel drops out of the `Ctrl-h`/`Ctrl-l` cycle.
+    pub show_files: bool,
+    /// The most recent diff pane focused, returned to when the panel is hidden.
+    last_diff: Focus,
     /// Pane body height, refreshed by the view each frame.
     pub viewport: usize,
     new_of_old: Vec<usize>,
@@ -92,6 +97,8 @@ impl App {
             new_cursor: 0,
             focus: Focus::Files,
             zoom: None,
+            show_files: true,
+            last_diff: Focus::Old,
             viewport: 1,
             new_of_old: Vec::new(),
             old_of_new: Vec::new(),
@@ -181,9 +188,11 @@ impl App {
         }
     }
 
+    /// Jump to the top of the focused region (vim's `gg`).
     pub fn top(&mut self) {
         match self.focus {
             Focus::Files => {
+                self.store_view();
                 self.selected = 0;
                 self.file_scroll = 0;
                 self.load_diff();
@@ -199,12 +208,43 @@ impl App {
         }
     }
 
+    /// Jump to the bottom of the focused region (vim's `G`): the last line of
+    /// the focused pane, or the last file when the file list is focused.
+    pub fn bottom(&mut self) {
+        match self.focus {
+            Focus::Files => {
+                self.store_view();
+                self.selected = self.files.len().saturating_sub(1);
+                self.ensure_file_visible();
+                self.load_diff();
+            }
+            Focus::Old => {
+                self.old_cursor = self.old_total().saturating_sub(1);
+                self.sync_from_old();
+            }
+            Focus::New => {
+                self.new_cursor = self.new_total().saturating_sub(1);
+                self.sync_from_new();
+            }
+        }
+    }
+
     pub fn focus_next(&mut self) {
         self.focus = self.neighbour(true);
+        self.remember_diff();
     }
 
     pub fn focus_prev(&mut self) {
         self.focus = self.neighbour(false);
+        self.remember_diff();
+    }
+
+    /// Track the last diff pane focused, so hiding the file panel can return
+    /// there instead of landing on nothing.
+    fn remember_diff(&mut self) {
+        if matches!(self.focus, Focus::Old | Focus::New) {
+            self.last_diff = self.focus;
+        }
     }
 
     /// The pane that zoom (Ctrl-z) is currently hiding, if any.
@@ -216,19 +256,28 @@ impl App {
         }
     }
 
-    /// The region one step left/right within the visible panels, skipping a
-    /// diff pane that zoom has hidden. Movement still stops at the ends (it
-    /// never wraps), so when the only step lands on the hidden pane with no
-    /// visible panel past it, the focus stays put.
+    /// Whether a region is currently on screen: the file panel unless toggled
+    /// off, and neither a diff pane that zoom hides.
+    fn visible(&self, f: Focus) -> bool {
+        match f {
+            Focus::Files => self.show_files,
+            _ => Some(f) != self.hidden_pane(),
+        }
+    }
+
+    /// The region one step left/right within the visible panels, skipping any
+    /// region currently hidden (the file panel when toggled off, or a diff pane
+    /// that zoom hides). Movement still stops at the ends (it never wraps), so
+    /// when the only step lands on a hidden region with no visible panel past
+    /// it, the focus stays put.
     ///
-    /// Zoom is deliberately left untouched: focusing the file list while a pane
-    /// is zoomed keeps that pane filling the width, and moving back returns to
-    /// it. Focus never lands on the hidden pane, so the zoom target stays valid.
+    /// Hiding is deliberately left untouched here: focus only moves between
+    /// regions that are actually on screen, so the zoom target and panel state
+    /// stay valid.
     fn neighbour(&self, right: bool) -> Focus {
         let step = |f: Focus| if right { f.right() } else { f.left() };
-        let hidden = self.hidden_pane();
         let mut next = step(self.focus);
-        while Some(next) == hidden {
+        while !self.visible(next) {
             let further = step(next);
             if further == next {
                 return self.focus;
@@ -236,6 +285,20 @@ impl App {
             next = further;
         }
         next
+    }
+
+    /// Toggle the file (git) panel. Hiding it while focused returns focus to the
+    /// last diff pane so movement keys keep working; showing it focuses it.
+    pub fn toggle_files(&mut self) {
+        if self.show_files {
+            self.show_files = false;
+            if self.focus == Focus::Files {
+                self.focus = self.last_diff;
+            }
+        } else {
+            self.show_files = true;
+            self.focus = Focus::Files;
+        }
     }
 
     /// Toggle single-pane zoom on the focused diff pane. No-op when the file
@@ -629,6 +692,8 @@ mod tests {
             new_cursor: 0,
             focus: Focus::Old,
             zoom: None,
+            show_files: true,
+            last_diff: Focus::Old,
             viewport,
             new_of_old,
             old_of_new,
@@ -750,6 +815,77 @@ mod tests {
         assert_eq!(app.focus, Focus::Old);
         app.toggle_zoom();
         assert_eq!(app.zoom, None);
+    }
+
+    #[test]
+    fn hiding_the_panel_returns_focus_to_the_last_diff_pane() {
+        // Reach the file list from the old pane (the last diff pane seen), then
+        // hide the panel: focus falls back to that pane, not to nothing.
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::New;
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Files);
+        app.toggle_files();
+        assert!(!app.show_files);
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn showing_the_panel_focuses_it() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Old;
+        app.toggle_files();
+        assert!(!app.show_files);
+        app.toggle_files();
+        assert!(app.show_files);
+        assert_eq!(app.focus, Focus::Files);
+    }
+
+    #[test]
+    fn focus_skips_a_hidden_file_panel() {
+        let mut app = app_with(two_hunks(), 12);
+        app.show_files = false;
+        app.focus = Focus::Old;
+        // Nothing visible to the left, so the step stops.
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::New);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn hidden_panel_and_zoom_compose() {
+        // With the panel hidden and the old pane zoomed, neither the panel nor
+        // the hidden new pane is reachable, so both steps stay put.
+        let mut app = app_with(two_hunks(), 12);
+        app.show_files = false;
+        app.focus = Focus::Old;
+        app.zoom = Some(Focus::Old);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn top_and_bottom_move_each_pane_to_its_ends() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Old;
+        app.bottom();
+        assert_eq!(app.old_cursor, app.old_total() - 1);
+        assert_eq!(app.new_cursor, app.new_total() - 1);
+        app.top();
+        assert_eq!((app.old_cursor, app.new_cursor), (0, 0));
+
+        app.focus = Focus::New;
+        app.bottom();
+        assert_eq!(app.new_cursor, app.new_total() - 1);
+        app.top();
+        assert_eq!(app.new_cursor, 0);
     }
 
     #[test]

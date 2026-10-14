@@ -23,42 +23,46 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [main, help] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
     let gap_w = gutter::gutter_width(&app.rows);
-    // Single-pane zoom: the focused pane takes the full width; the other pane,
-    // the gutter and its ruler collapse to zero-size rects.
+    // Only the visible regions get a column: the file panel can be toggled off
+    // (`app.show_files`) and single-pane zoom hides one diff pane (with the
+    // gutter and both rulers). Omitted regions collapse to zero-size rects.
     let zero = Rect::new(0, 0, 0, 0);
-    let (files_col, old_ruler, old, gap, new, new_ruler) = match app.zoom {
-        Some(Focus::Old) => {
-            let [fc, or, o] = Layout::horizontal([
-                Constraint::Length(FILES_W),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .areas(main);
-            (fc, or, o, zero, zero, zero)
-        }
-        Some(Focus::New) => {
-            let [fc, n, nr] = Layout::horizontal([
-                Constraint::Length(FILES_W),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .areas(main);
-            (fc, zero, zero, zero, n, nr)
-        }
-        // Not zoomed (the file list is never a zoom target).
-        _ => {
-            let [fc, or, o, g, n, nr] = Layout::horizontal([
-                Constraint::Length(FILES_W),
-                Constraint::Length(1),
-                Constraint::Min(0),
-                Constraint::Length(gap_w),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .areas(main);
-            (fc, or, o, g, n, nr)
+    let show_old = app.zoom != Some(Focus::New);
+    let show_new = app.zoom != Some(Focus::Old);
+    let show_gap = app.zoom.is_none();
+
+    let mut constraints: Vec<Constraint> = Vec::new();
+    if app.show_files {
+        constraints.push(Constraint::Length(FILES_W));
+    }
+    if show_old {
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Min(0));
+    }
+    if show_gap {
+        constraints.push(Constraint::Length(gap_w));
+    }
+    if show_new {
+        constraints.push(Constraint::Min(0));
+        constraints.push(Constraint::Length(1));
+    }
+    let cols = Layout::horizontal(constraints).split(main);
+    let mut i = 0;
+    let mut take = |present: bool| {
+        if present {
+            let rect = cols[i];
+            i += 1;
+            rect
+        } else {
+            zero
         }
     };
+    let files_col = take(app.show_files);
+    let old_ruler = take(show_old);
+    let old = take(show_old);
+    let gap = take(show_gap);
+    let new = take(show_new);
+    let new_ruler = take(show_new);
 
     let [files_head, files_body] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(files_col);
@@ -104,17 +108,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .and_then(|r| r.root().file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    f.render_widget(
-        Paragraph::new(format!(" {repo_name}")).style(files_style),
-        files_head,
-    );
-    files::draw(
-        f,
-        &app.tree,
-        app.file_row.get(app.selected).copied(),
-        app.file_scroll,
-        files_body,
-    );
+    if app.show_files {
+        f.render_widget(
+            Paragraph::new(format!(" {repo_name}")).style(files_style),
+            files_head,
+        );
+        files::draw(
+            f,
+            &app.tree,
+            app.file_row.get(app.selected).copied(),
+            app.file_scroll,
+            files_body,
+        );
+    }
 
     f.render_widget(Paragraph::new(" old").style(old_style), old_head);
     f.render_widget(
@@ -223,6 +229,6 @@ fn help_line(app: &App, old_total: usize) -> String {
         format!("   {}", app.message)
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  PgUp/PgDn  R reload  q quit{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  j/k move  gg/G top/bot  n/p hunk  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{msg}"
     )
 }

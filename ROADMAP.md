@@ -38,6 +38,9 @@ Manual refresh for the MVP.
   `j`/`k` move in the focused region, the panes stay aligned via a line-pair
   map (`old_top`/`new_top`), and scrolling is clamped so you can't scroll past
   EOF. The manual offset (`,`/`.`) was dropped.
+- **Vim motions:** done — `gg`/`G` jump to the top/bottom of the focused region
+  (first/last line of a pane, first/last file in the list), `Home` was dropped
+  in favour of them.
 - **Cursor:** done — each pane has a cursor (the sync anchor); the viewport
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor
@@ -50,6 +53,10 @@ Manual refresh for the MVP.
   hidden pane drops out of the `Ctrl-h`/`Ctrl-l` cycle, and switching to the
   file list keeps the zoom (the pane stays full width until you toggle it off
   from the zoomed pane).
+- **Panel toggle:** done — `Space` is the leader and `Space e` shows/hides the
+  file (git) panel; hidden, the diff panes take the full width and the panel
+  drops out of the `Ctrl-h`/`Ctrl-l` cycle. Hiding it while focused returns
+  focus to the last diff pane; showing it focuses the panel.
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
   data-driven, sequence-capable table.
 

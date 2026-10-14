@@ -25,6 +25,8 @@ pub enum Command {
     PageUp,
     /// Jump to the top of the focused region.
     Top,
+    /// Jump to the bottom of the focused region.
+    Bottom,
     NextHunk,
     PrevHunk,
     /// Cycle focus to the previous region.
@@ -40,6 +42,8 @@ pub enum Command {
     ScrollUp,
     /// Zoom the focused diff pane to the full width (toggle).
     ToggleZoom,
+    /// Show/hide the file (git) panel.
+    ToggleFiles,
     Reload,
 }
 
@@ -52,6 +56,7 @@ impl Command {
             Command::PageDown => app.page_down(),
             Command::PageUp => app.page_up(),
             Command::Top => app.top(),
+            Command::Bottom => app.bottom(),
             Command::NextHunk => app.next_hunk(),
             Command::PrevHunk => app.prev_hunk(),
             Command::FocusPrev => app.focus_prev(),
@@ -62,6 +67,7 @@ impl Command {
             Command::ScrollDown => app.scroll_down(),
             Command::ScrollUp => app.scroll_up(),
             Command::ToggleZoom => app.toggle_zoom(),
+            Command::ToggleFiles => app.toggle_files(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue
