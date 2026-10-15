@@ -221,10 +221,10 @@ fn draw_cursor(f: &mut Frame, area: Rect, x_off: usize, cursor: usize, top: usiz
         return;
     }
     let y = area.y + (cursor - top) as u16;
-    let block = if active {
-        theme::CURSOR_ACTIVE
+    let (block, block_fg) = if active {
+        (theme::CURSOR_ACTIVE, theme::CURSOR_ACTIVE_FG)
     } else {
-        theme::CURSOR_INACTIVE
+        (theme::CURSOR_INACTIVE, theme::CURSOR_INACTIVE_FG)
     };
     let buf = f.buffer_mut();
     for x in area.x..area.x + area.width {
@@ -239,7 +239,9 @@ fn draw_cursor(f: &mut Frame, area: Rect, x_off: usize, cursor: usize, top: usiz
     }
     let x = area.x + x_off as u16;
     if x < area.x + area.width {
+        // A dark-on-bright block so the letter under the cursor stays readable.
         buf[(x, y)].set_bg(block);
+        buf[(x, y)].set_fg(block_fg);
     }
 }
 

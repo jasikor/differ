@@ -120,6 +120,10 @@ pub fn hunk_color(kind: crate::model::Kind) -> Color {
 pub const CURSOR_ACTIVE: Color = Color::Rgb(0xff, 0xbf, 0x00);
 pub const CURSOR_INACTIVE: Color = Color::Rgb(0x4e, 0x57, 0x63);
 pub const CURSOR_LINE: Color = Color::Rgb(0x1b, 0x1f, 0x24);
+/// Foregrounds that stay readable on the cursor block (dark on the amber
+/// active block, light on the grey inactive one).
+pub const CURSOR_ACTIVE_FG: Color = Color::Rgb(0x1b, 0x1f, 0x24);
+pub const CURSOR_INACTIVE_FG: Color = Color::Rgb(0xe6, 0xea, 0xef);
 
 // Jump labels (`s`): a bright tag drawn after each visible match, and a tint on
 // the matched character.
