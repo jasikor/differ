@@ -155,6 +155,12 @@ pub struct App {
     search_input: bool,
     /// Where the search started, to preview around and to restore on cancel.
     search_origin: (bool, usize, usize),
+    /// Full-screen help page (`Space ?`).
+    pub help_open: bool,
+    pub help_scroll: usize,
+    pub help_lines: Vec<String>,
+    /// Which-key hint for the pending prefix, refreshed by the event loop.
+    pub key_hint: String,
     pub message: String,
 }
 
@@ -192,6 +198,10 @@ impl App {
             search: None,
             search_input: false,
             search_origin: (true, 0, 0),
+            help_open: false,
+            help_scroll: 0,
+            help_lines: Vec::new(),
+            key_hint: String::new(),
             message: String::new(),
         };
         match Repo::discover_in(start) {
@@ -403,6 +413,26 @@ impl App {
         } else {
             Some(target)
         };
+    }
+
+    // ---- full-screen help (`Space ?`) ----
+
+    /// Toggle the help page.
+    pub fn toggle_help(&mut self) {
+        self.help_open = !self.help_open;
+        if self.help_open {
+            self.help_scroll = 0;
+        }
+    }
+
+    pub fn close_help(&mut self) {
+        self.help_open = false;
+    }
+
+    /// Scroll the help page (clamped to its lines).
+    pub fn help_scroll_by(&mut self, delta: isize) {
+        let max = self.help_lines.len() as isize;
+        self.help_scroll = (self.help_scroll as isize + delta).clamp(0, max) as usize;
     }
 
     // ---- horizontal cursor (vim's w/b/e, 0/^/$) ----
@@ -656,11 +686,11 @@ impl App {
         self.jump_pattern.chars().count()
     }
 
-    /// Begin a jump. Needs a diff pane focused (the file list has no columns).
+    /// Begin a jump. From the file list it targets the last diff pane (and
+    /// focuses it), like `/`, so it works from anywhere.
     pub fn start_jump(&mut self) {
         if matches!(self.focus, Focus::Files) {
-            self.message = "s: focus a diff pane first".into();
-            return;
+            self.focus = self.last_diff;
         }
         self.jump = JumpState::Active;
         self.jump_pattern.clear();
@@ -1647,6 +1677,10 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         search: None,
         search_input: false,
         search_origin: (true, 0, 0),
+        help_open: false,
+        help_scroll: 0,
+        help_lines: Vec::new(),
+        key_hint: String::new(),
         message: String::new(),
     }
 }
@@ -1690,6 +1724,10 @@ mod tests {
             search: None,
             search_input: false,
             search_origin: (true, 0, 0),
+            help_open: false,
+            help_scroll: 0,
+            help_lines: Vec::new(),
+            key_hint: String::new(),
             message: String::new(),
         }
     }
@@ -2007,6 +2045,21 @@ mod tests {
     }
 
     #[test]
+    fn help_toggles_scrolls_and_closes() {
+        let mut app = app_with(vec![DiffRow::Ctx("x".into())], 5);
+        app.help_lines = (0..10).map(|i| format!("line {i}")).collect();
+        assert!(!app.help_open);
+        app.toggle_help();
+        assert!(app.help_open);
+        app.help_scroll_by(3);
+        assert_eq!(app.help_scroll, 3);
+        app.help_scroll_by(-100);
+        assert_eq!(app.help_scroll, 0);
+        app.close_help();
+        assert!(!app.help_open);
+    }
+
+    #[test]
     fn search_is_smartcase_literal() {
         let mut app = app_with(vec![DiffRow::Ctx("let Let LET".into())], 5);
         app.focus = Focus::Old;
@@ -2106,6 +2159,16 @@ mod tests {
         assert!(app.search_input());
         assert_eq!(app.focus, Focus::Old);
         assert!(app.search().is_some());
+    }
+
+    #[test]
+    fn jump_from_the_file_list_targets_a_diff_pane() {
+        let mut app = app_with(vec![DiffRow::Ctx("abc".into())], 5);
+        app.focus = Focus::Files;
+        app.start_jump();
+        // Like `/`, the jump focuses the last diff pane instead of no-op'ing.
+        assert!(app.jump_active());
+        assert_eq!(app.focus, Focus::Old);
     }
 
     #[test]
@@ -2226,15 +2289,6 @@ mod tests {
         app.start_jump();
         assert!(app.jump_key(KeyCode::Esc));
         assert_eq!(app.jump_state(), JumpState::Idle);
-    }
-
-    #[test]
-    fn jump_needs_a_diff_pane() {
-        let mut app = app_with(vec![DiffRow::Ctx("aa".into())], 5);
-        app.focus = Focus::Files;
-        app.start_jump();
-        assert_eq!(app.jump_state(), JumpState::Idle);
-        assert!(app.message.contains("focus a diff pane"));
     }
 
     #[test]

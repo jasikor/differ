@@ -9,6 +9,7 @@ pub mod theme;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Color,
+    text::Line,
     widgets::Paragraph,
     Frame,
 };
@@ -20,6 +21,10 @@ use crate::model;
 const FILES_W: u16 = 32;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    if app.help_open {
+        draw_help(f, app);
+        return;
+    }
     let [main, help] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
     let gap_w = gutter::gutter_width(&app.rows);
@@ -325,6 +330,27 @@ fn draw_search(
     }
 }
 
+/// The full-screen help page (`?`).
+fn draw_help(f: &mut Frame, app: &App) {
+    let [body, footer] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
+    let visible = body.height as usize;
+    let total = app.help_lines.len();
+    let scroll = app.help_scroll.min(total.saturating_sub(visible));
+    let lines: Vec<Line> = app
+        .help_lines
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|l| Line::from(l.clone()))
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(theme::dim_style()), body);
+    f.render_widget(
+        Paragraph::new(" differ keys    j/k scroll    ? / Esc close").style(theme::dim_style()),
+        footer,
+    );
+}
+
 /// The bottom line, plus the caret column when a prompt is active.
 fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
     // The search prompt owns the line while typing (vim's command line), so it
@@ -335,6 +361,10 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
         let text = format!("/{pattern}");
         let col = 1 + pattern.chars().count();
         return (text, Some(col as u16));
+    }
+    // which-key: while a prefix is pending, show just that prefix's options.
+    if !app.key_hint.is_empty() {
+        return (format!(" {}", app.key_hint), None);
     }
     let path = app.selected_path().unwrap_or("(no file)");
     let cur = app.old_top.min(old_total);
@@ -348,15 +378,13 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
         Focus::Old => "old",
         Focus::New => "new",
     };
-    // Keep messages near the front so they are visible before the hints clip.
+    // Keep messages near the front so they are visible.
     let msg = if app.message.is_empty() {
         String::new()
     } else {
         format!("{}   ", app.message)
     };
-    let text = format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   {msg}^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c ^N/^P change  Spc n/p file  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit"
-    );
+    let text = format!(" {path}  {pct}% ({cur}/{old_total})  [{focus}]   {msg}? help   q quit");
     (text, None)
 }
 
@@ -486,7 +514,37 @@ mod tests {
         // Once committed, the normal hints come back (no caret).
         app.search_key(ratatui::crossterm::event::KeyCode::Enter);
         let (text, caret) = help_line(&app, 1);
-        assert!(text.contains("focus"));
+        assert!(text.contains("? help"));
+        assert_eq!(caret, None);
+    }
+
+    #[test]
+    fn help_page_renders_and_key_hint_takes_the_status_line() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.help_lines = vec![
+            "Panels".into(),
+            "    Space e       toggle file panel".into(),
+        ];
+        app.help_open = true;
+        let mut term = Terminal::new(TestBackend::new(60, 6)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..6)
+            .map(|y| {
+                (0..60)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Panels"));
+        assert!(text.contains("toggle file panel"));
+
+        // With help closed, the which-key hint owns the bottom line.
+        app.help_open = false;
+        app.key_hint = "Space: e toggle file panel".into();
+        let (line, caret) = help_line(&app, 1);
+        assert!(line.contains("toggle file panel"));
         assert_eq!(caret, None);
     }
 }

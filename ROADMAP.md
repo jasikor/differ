@@ -90,6 +90,10 @@ Manual refresh for the MVP.
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
   data-driven, sequence-capable table. `Esc` cancels a pending sequence; `q`
   quits.
+- **Help & which-key:** done — every command has a short description, so the
+  which-key line (a pending prefix's options, shown in the status line) is
+  keymap-derived, and `?` opens a full-screen help page of grouped keys. The
+  status-line hint list is trimmed to `? help` / `q quit`.
 
 ## Known issues (for a future bug pass)
 

@@ -30,7 +30,8 @@ any focus · `gg`/`G` top/bottom ·
 `zz`/`zt`/`zb` put the cursor line at middle/top/bottom · `Ctrl-e`/`Ctrl-y`
 scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused pane ·
 `Space e` show/hide the file panel · `PgUp`/`PgDn` page ·
-`R` reload · `q` quit · `Esc` cancels a pending key.
+`R` reload · `q` quit · `Esc` cancels a pending key · `?` full-screen key
+help (press a prefix like `Space` to see its options in the status line).
 
 ## License
 

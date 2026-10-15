@@ -69,6 +69,8 @@ pub enum Command {
     /// Select the next / previous file, whatever has focus.
     NextFile,
     PrevFile,
+    /// Toggle the full-screen key help.
+    Help,
     Reload,
 }
 
@@ -110,8 +112,52 @@ impl Command {
             Command::SearchPrev => app.search_prev(),
             Command::NextFile => app.next_file(),
             Command::PrevFile => app.prev_file(),
+            Command::Help => app.toggle_help(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue
+    }
+
+    /// A short description, for the which-key hint and the help page.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Command::Quit => "quit",
+            Command::Down => "down",
+            Command::Up => "up",
+            Command::Left => "left",
+            Command::Right => "right",
+            Command::PageDown => "page down",
+            Command::PageUp => "page up",
+            Command::Top => "top",
+            Command::Bottom => "bottom",
+            Command::LineStart => "line start",
+            Command::LineFirstNonBlank => "first non-blank",
+            Command::LineEnd => "line end",
+            Command::WordForward => "word forward",
+            Command::WordBack => "word back",
+            Command::WordEnd => "word end",
+            Command::WordForwardBig => "WORD forward",
+            Command::WordBackBig => "WORD back",
+            Command::WordEndBig => "WORD end",
+            Command::NextHunk => "next change",
+            Command::PrevHunk => "previous change",
+            Command::FocusPrev => "focus previous panel",
+            Command::FocusNext => "focus next panel",
+            Command::CursorCenter => "cursor to middle",
+            Command::CursorTop => "cursor to top",
+            Command::CursorBottom => "cursor to bottom",
+            Command::ScrollDown => "scroll view down",
+            Command::ScrollUp => "scroll view up",
+            Command::ToggleZoom => "zoom pane",
+            Command::ToggleFiles => "toggle file panel",
+            Command::StartJump => "jump (flash)",
+            Command::Search => "search",
+            Command::SearchNext => "next match",
+            Command::SearchPrev => "previous match",
+            Command::NextFile => "next file",
+            Command::PrevFile => "previous file",
+            Command::Help => "help",
+            Command::Reload => "reload",
+        }
     }
 }

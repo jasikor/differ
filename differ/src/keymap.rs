@@ -29,6 +29,42 @@ impl Key {
             ctrl: event.modifiers.contains(KeyModifiers::CONTROL),
         }
     }
+
+    /// A short human label, e.g. `j`, `Ctrl-n`, `Space`, `PgDn`, `Left`.
+    pub fn label(&self) -> String {
+        match self.code {
+            KeyCode::Char(' ') => "Space".to_string(),
+            KeyCode::Char(c) if self.ctrl => format!("Ctrl-{c}"),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Left => "Left".to_string(),
+            KeyCode::Right => "Right".to_string(),
+            KeyCode::Up => "Up".to_string(),
+            KeyCode::Down => "Down".to_string(),
+            KeyCode::PageUp => "PgUp".to_string(),
+            KeyCode::PageDown => "PgDn".to_string(),
+            KeyCode::Enter => "Enter".to_string(),
+            KeyCode::Esc => "Esc".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
+/// Join a key sequence into a label: `gg`, `]c`, `Space e`, `Ctrl-n`.
+pub fn sequence_label(seq: &[Key]) -> String {
+    let mut out = String::new();
+    for key in seq {
+        let label = key.label();
+        if label.chars().count() == 1 {
+            out.push_str(&label);
+        } else {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(&label);
+            out.push(' ');
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// What feeding a key to the keymap produced.
@@ -84,6 +120,8 @@ impl Keymap {
             two(' ', 'e', Command::ToggleFiles),
             two(' ', 'n', Command::NextFile),
             two(' ', 'p', Command::PrevFile),
+            // ? opens the full-screen key help.
+            one(Char('?'), Command::Help),
             // s jumps to a visible character (flash-style).
             one(Char('s'), Command::StartJump),
             // / searches the focused pane; n/N repeat.
@@ -143,11 +181,42 @@ impl Keymap {
         Resolution::None
     }
 
-    /// The keys buffered so far (for a pending sequence). Used by the UI once
-    /// pending sequences exist (vim's `showcmd`).
-    #[allow(dead_code)]
+    /// The keys buffered so far (for a pending sequence). Drives the which-key
+    /// status line.
     pub fn pending(&self) -> &[Key] {
         &self.pending
+    }
+
+    /// The next key + command for each binding that extends the pending keys.
+    pub fn continuations(&self) -> Vec<(Key, Command)> {
+        let mut out = Vec::new();
+        for (seq, cmd) in &self.bindings {
+            if seq.len() > self.pending.len() && seq.starts_with(&self.pending) {
+                let next = seq[self.pending.len()];
+                if !out.iter().any(|(k, _)| *k == next) {
+                    out.push((next, *cmd));
+                }
+            }
+        }
+        out
+    }
+
+    /// The which-key hint for the pending keys, or empty when none are pending.
+    pub fn hint(&self) -> String {
+        if self.pending().is_empty() {
+            return String::new();
+        }
+        let prefix = sequence_label(self.pending());
+        let items: Vec<String> = self
+            .continuations()
+            .iter()
+            .map(|(key, cmd)| format!("{} {}", key.label(), cmd.describe()))
+            .collect();
+        if items.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}: {}", items.join("   "))
+        }
     }
 }
 
@@ -291,6 +360,35 @@ mod tests {
         assert_eq!(km.feed(plain('n')), Resolution::Run(Command::NextFile));
         assert_eq!(km.feed(plain(' ')), Resolution::Pending);
         assert_eq!(km.feed(plain('p')), Resolution::Run(Command::PrevFile));
+    }
+
+    #[test]
+    fn question_opens_help() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('?')), Resolution::Run(Command::Help));
+    }
+
+    #[test]
+    fn which_key_lists_the_prefix_continuations() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        let keys: Vec<String> = km.continuations().iter().map(|(k, _)| k.label()).collect();
+        for k in ["e", "n", "p"] {
+            assert!(keys.contains(&k.to_string()), "missing {k} in {keys:?}");
+        }
+        assert_eq!(keys.len(), 3);
+        let hint = km.hint();
+        assert!(hint.starts_with("Space: "), "hint: {hint}");
+        assert!(hint.contains("toggle file panel"), "hint: {hint}");
+    }
+
+    #[test]
+    fn every_binding_has_keys_and_a_description() {
+        let km = Keymap::default_bindings();
+        for (seq, cmd) in &km.bindings {
+            assert!(!sequence_label(seq).is_empty());
+            assert!(!cmd.describe().is_empty(), "{cmd:?} has no description");
+        }
     }
 
     #[test]
