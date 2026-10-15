@@ -277,13 +277,52 @@ impl App {
         match self.focus {
             Focus::Files => self.move_selection(n as i32),
             Focus::Old => {
-                self.old_cursor = clamp_line(self.old_cursor as isize + n, self.old_total());
-                self.sync_from_old();
+                let c = clamp_line(self.old_cursor as isize + n, self.old_total());
+                if c == self.old_cursor && n > 0 {
+                    // Already at the end: reveal the other side's trailing lines.
+                    self.frame_end();
+                    self.keep_cols_visible();
+                } else {
+                    self.old_cursor = c;
+                    self.sync_from_old();
+                }
             }
             Focus::New => {
-                self.new_cursor = clamp_line(self.new_cursor as isize + n, self.new_total());
-                self.sync_from_new();
+                let c = clamp_line(self.new_cursor as isize + n, self.new_total());
+                if c == self.new_cursor && n > 0 {
+                    self.frame_end();
+                    self.keep_cols_visible();
+                } else {
+                    self.new_cursor = c;
+                    self.sync_from_new();
+                }
             }
+        }
+    }
+
+    /// Frame the end of the row model so the taller side's trailing (unpaired)
+    /// lines are visible; the other side is pushed past its content where it has
+    /// no counterpart. Used when the focused pane is already at its last line —
+    /// e.g. trailing deletions are only on the old side, so scrolling the new
+    /// pane to its end would otherwise never reveal them.
+    fn frame_end(&mut self) {
+        let vp = self.viewport.max(1);
+        if self.old_total() >= self.new_total() {
+            self.old_top = self.old_total().saturating_sub(vp);
+            self.new_top = self
+                .new_of_old
+                .get(self.old_top)
+                .copied()
+                .unwrap_or(self.new_total())
+                .min(self.new_total());
+        } else {
+            self.new_top = self.new_total().saturating_sub(vp);
+            self.old_top = self
+                .old_of_new
+                .get(self.new_top)
+                .copied()
+                .unwrap_or(self.old_total())
+                .min(self.old_total());
         }
     }
 
@@ -320,10 +359,14 @@ impl App {
             Focus::Old => {
                 self.old_cursor = self.old_total().saturating_sub(1);
                 self.sync_from_old();
+                self.frame_end();
+                self.keep_cols_visible();
             }
             Focus::New => {
                 self.new_cursor = self.new_total().saturating_sub(1);
                 self.sync_from_new();
+                self.frame_end();
+                self.keep_cols_visible();
             }
         }
     }
@@ -1957,6 +2000,50 @@ mod tests {
         assert_eq!(app.selected, 0);
         // The focus is left alone.
         assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn bottom_reveals_trailing_deletions_from_the_new_pane() {
+        // Two context lines then six deletions (only on the old side).
+        let mut rows: Vec<DiffRow> = (0..2).map(|i| DiffRow::Ctx(format!("c{i}"))).collect();
+        rows.extend((0..6).map(|i| DiffRow::Del(format!("d{i}"))));
+        let mut app = app_with(rows, 4);
+        app.focus = Focus::New;
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+
+        app.bottom();
+        // The old pane is scrolled to its end, so the deleted tail is visible.
+        assert_eq!(app.old_top, app.old_total() - app.viewport);
+        // The new side has no counterpart there, so it is pushed past its content.
+        assert_eq!(app.new_top, app.new_total());
+    }
+
+    #[test]
+    fn scrolling_down_at_the_end_reveals_the_other_side() {
+        let mut rows: Vec<DiffRow> = (0..2).map(|i| DiffRow::Ctx(format!("c{i}"))).collect();
+        rows.extend((0..6).map(|i| DiffRow::Del(format!("d{i}"))));
+        let mut app = app_with(rows, 4);
+        app.focus = Focus::New;
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+        app.new_cursor = app.new_total() - 1; // already on the last new line
+        app.down(); // can't move the cursor -> reveal the trailing lines
+        assert_eq!(app.old_top, app.old_total() - app.viewport);
+    }
+
+    #[test]
+    fn bottom_reveals_trailing_insertions_from_the_old_pane() {
+        let mut rows = vec![DiffRow::Ctx("c0".into())];
+        rows.extend((0..6).map(|i| DiffRow::Ins(format!("i{i}"))));
+        let mut app = app_with(rows, 3);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+
+        app.bottom();
+        assert_eq!(app.new_top, app.new_total() - app.viewport);
+        assert_eq!(app.old_top, app.old_total());
     }
 
     #[test]

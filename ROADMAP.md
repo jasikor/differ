@@ -89,6 +89,10 @@ Manual refresh for the MVP.
   file (git) panel; hidden, the diff panes take the full width and the panel
   drops out of the `Ctrl-h`/`Ctrl-l` cycle. Hiding it while focused returns
   focus to the last diff pane; showing it focuses the panel.
+- **Tail over-scroll:** done — when the focused pane is at its last line, further
+  down / `G` frames the end of the row model, so the taller side's trailing
+  (unpaired) deleted/inserted lines are visible opposite blanks in the other
+  pane (previously you had to switch panes to see a trailing deletion).
 - Commands are decoupled from keys (`command.rs` / `keymap.rs`); the keymap is a
   data-driven, sequence-capable table. `Esc` cancels a pending sequence; `q`
   quits.
