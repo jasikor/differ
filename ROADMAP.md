@@ -63,6 +63,10 @@ Manual refresh for the MVP.
   as you type (`incsearch`). `Enter` commits, `n`/`N` step through matches with
   wrapping and scroll them into view, `Esc` restores the origin. Matches are
   tinted, the current one brighter.
+- **File switching:** done — `Space n`/`Space p` select the next/previous file
+  from any focus (or with the panel hidden), so you can move through the change
+  set without leaving a diff pane; it stops at the ends and keeps the current
+  focus. Hunk navigation also has `Ctrl-n`/`Ctrl-p` as an alias for `]c`/`[c`.
 - **Cursor:** done — each pane has a cursor (the sync anchor); the viewport
   follows it, and the paired pane's cursor tracks it via the line map. Drawn as
   a solid block (active brighter than inactive) at the start of the cursor
@@ -172,3 +176,8 @@ differ/src/
   differing only in whitespace as unchanged, like `git diff -w` /
   `--ignore-all-space`. Feed a whitespace-insensitive comparison into
   `model::diff_rows` so the tints, hunk offsets and sync all follow the mode.
+- **Resizable windows (idea, later):** use `Ctrl-Left`/`Ctrl-Right` to resize
+  the file panel (currently the fixed `FILES_W` in `view/mod.rs`), and possibly
+  `Ctrl-Up`/`Ctrl-Down` for pane proportions / height. No implementation now —
+  just capturing the intent (it also answers the "fixed width or toggleable
+  sidebar?" open question).

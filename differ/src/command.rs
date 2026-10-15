@@ -66,6 +66,9 @@ pub enum Command {
     /// Jump to the next / previous search match.
     SearchNext,
     SearchPrev,
+    /// Select the next / previous file, whatever has focus.
+    NextFile,
+    PrevFile,
     Reload,
 }
 
@@ -105,6 +108,8 @@ impl Command {
             Command::Search => app.start_search(),
             Command::SearchNext => app.search_next(),
             Command::SearchPrev => app.search_prev(),
+            Command::NextFile => app.next_file(),
+            Command::PrevFile => app.prev_file(),
             Command::Reload => app.refresh(),
         }
         Outcome::Continue

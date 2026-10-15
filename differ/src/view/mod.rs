@@ -348,7 +348,7 @@ fn help_line(app: &App, old_total: usize) -> String {
         String::new()
     };
     format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c change  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{search}{msg}"
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c ^N/^P change  Spc n/p file  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{search}{msg}"
     )
 }
 

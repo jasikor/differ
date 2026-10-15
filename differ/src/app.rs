@@ -1101,6 +1101,16 @@ impl App {
         self.load_diff();
     }
 
+    /// Select the next / previous file regardless of focus, so files can be
+    /// changed without leaving a diff pane (or while the list is hidden).
+    pub fn next_file(&mut self) {
+        self.move_selection(1);
+    }
+
+    pub fn prev_file(&mut self) {
+        self.move_selection(-1);
+    }
+
     fn ensure_file_visible(&mut self) {
         let vp = self.viewport.max(1);
         let row = self.file_row.get(self.selected).copied().unwrap_or(0);
@@ -1811,6 +1821,44 @@ mod tests {
         app.focus_next();
         assert_eq!(app.focus, Focus::Old);
         app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn next_and_prev_file_move_the_selection_from_any_focus() {
+        let mut app = app_with(vec![DiffRow::Ctx("ctx".into())], 10);
+        app.files = vec![
+            git::FileEntry {
+                path: "a.txt".into(),
+                staged: None,
+                unstaged: Some('M'),
+            },
+            git::FileEntry {
+                path: "b.txt".into(),
+                staged: None,
+                unstaged: Some('M'),
+            },
+            git::FileEntry {
+                path: "c.txt".into(),
+                staged: None,
+                unstaged: Some('M'),
+            },
+        ];
+        app.file_row = vec![0, 1, 2];
+        app.selected = 0;
+        app.focus = Focus::Old; // not the file list
+
+        app.next_file();
+        assert_eq!(app.selected, 1);
+        app.next_file();
+        app.next_file(); // clamps at the last file
+        assert_eq!(app.selected, 2);
+        app.prev_file();
+        assert_eq!(app.selected, 1);
+        app.prev_file();
+        app.prev_file(); // clamps at the first
+        assert_eq!(app.selected, 0);
+        // The focus is left alone.
         assert_eq!(app.focus, Focus::Old);
     }
 

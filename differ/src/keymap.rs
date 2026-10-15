@@ -80,8 +80,10 @@ impl Keymap {
             ctrl(Char('y'), Command::ScrollUp),
             // Ctrl-z zooms the focused diff pane to the full width.
             ctrl(Char('z'), Command::ToggleZoom),
-            // Space is the leader; Space e toggles the file (git) panel.
+            // Next/previous file from any focus (leader), and ToggleFiles.
             two(' ', 'e', Command::ToggleFiles),
+            two(' ', 'n', Command::NextFile),
+            two(' ', 'p', Command::PrevFile),
             // s jumps to a visible character (flash-style).
             one(Char('s'), Command::StartJump),
             // / searches the focused pane; n/N repeat.
@@ -91,6 +93,8 @@ impl Keymap {
             // Hunk navigation, vim-diff style.
             two(']', 'c', Command::NextHunk),
             two('[', 'c', Command::PrevHunk),
+            ctrl(Char('n'), Command::NextHunk),
+            ctrl(Char('p'), Command::PrevHunk),
             // Word motions (vim's w/b/e) and line ends (0/^/$).
             one(Char('w'), Command::WordForward),
             one(Char('b'), Command::WordBack),
@@ -270,6 +274,23 @@ mod tests {
     fn s_starts_a_jump() {
         let mut km = Keymap::default_bindings();
         assert_eq!(km.feed(plain('s')), Resolution::Run(Command::StartJump));
+    }
+
+    #[test]
+    fn ctrl_n_p_are_hunks_and_leader_n_p_are_files() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('n'))),
+            Resolution::Run(Command::NextHunk)
+        );
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('p'))),
+            Resolution::Run(Command::PrevHunk)
+        );
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        assert_eq!(km.feed(plain('n')), Resolution::Run(Command::NextFile));
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        assert_eq!(km.feed(plain('p')), Resolution::Run(Command::PrevFile));
     }
 
     #[test]
