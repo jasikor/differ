@@ -640,7 +640,9 @@ impl App {
         self.jump != JumpState::Idle
     }
 
-    /// The search pattern typed so far.
+    /// The jump pattern typed so far (used by tests; the jump shows labels
+    /// instead of a prompt).
+    #[allow(dead_code)]
     pub fn jump_pattern(&self) -> &str {
         &self.jump_pattern
     }

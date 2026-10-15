@@ -327,19 +327,13 @@ fn draw_search(
 
 /// The bottom line, plus the caret column when a prompt is active.
 fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
-    // A live prompt takes over the line, like vim's command line, so it is
-    // never clipped off the end of the (long) key hints.
+    // The search prompt owns the line while typing (vim's command line), so it
+    // is never clipped. The `s` jump shows its labels inline instead of a
+    // prompt, so the normal hints stay put.
     if app.search_input() {
         let pattern = app.search().map(|s| s.pattern.as_str()).unwrap_or("");
         let text = format!("/{pattern}");
         let col = 1 + pattern.chars().count();
-        return (text, Some(col as u16));
-    }
-    if app.jump_state() == JumpState::Active {
-        let pattern = app.jump_pattern();
-        let prefix = "jump: /";
-        let text = format!("{prefix}{pattern}");
-        let col = prefix.chars().count() + pattern.chars().count();
         return (text, Some(col as u16));
     }
     let path = app.selected_path().unwrap_or("(no file)");
