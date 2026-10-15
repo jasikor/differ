@@ -21,6 +21,10 @@ Manual refresh for the MVP.
 3. **Repo structure:** Cargo workspace at the root with a `differ/` crate.
 4. **Layout:** `[ file list | old pane | gutter | new pane ]`; file list
    selected with keys; refresh on demand.
+5. **Refresh is manual, by choice.** `R` re-reads `git status` (the whole file
+   list) and reloads the selected file's diff. **No** automatic refresh — no
+   filesystem watcher and no polling timer. Deliberate: the app stays idle-quiet
+   and predictable (the user does not want auto-refresh).
 
 ## Status
 
@@ -134,7 +138,8 @@ Manual refresh for the MVP.
 
 ## Out of scope (post-MVP)
 
-Auto file-watching, hunk/line-level staging, pull/fetch/branch management,
+Auto file-watching (deliberately *not* wanted — see Locked decision 5),
+hunk/line-level staging, pull/fetch/branch management,
 signing, config/theming, mouse, multi-repo, history browsing, arbitrary refs.
 
 ## Architecture
