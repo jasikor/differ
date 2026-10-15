@@ -745,67 +745,59 @@ impl App {
         self.cancel_jump();
     }
 
-    /// Recompute matches and labels for the current pattern.
+    /// Recompute matches and labels for the current pattern, across both visible
+    /// panes (the focused one first, then the other).
     fn refresh_jump(&mut self) {
-        self.jump_matches = self.visible_matches();
+        self.jump_matches = self.jump_visible_matches();
         if self.jump_matches.is_empty() {
             if !self.jump_pattern.is_empty() {
                 self.message = format!("no match: {}", self.jump_pattern);
             }
             return;
         }
-        let (line, col, width) = match self.focus {
-            Focus::Old => (self.old_cursor, self.cursor_col(true), self.old_code_w),
-            Focus::New => (self.new_cursor, self.cursor_col(false), self.new_code_w),
-            Focus::Files => (0, 0, 1),
-        };
-        sort_by_distance(&mut self.jump_matches, line, col, width.max(1));
         let labels = self.jump_labels();
         assign_labels(&mut self.jump_matches, labels);
         self.message.clear();
     }
 
     /// Available labels for the current pattern: flash's alphabet minus any
-    /// character that follows an occurrence of the pattern (those must stay
-    /// typeable so the pattern can be extended).
+    /// character that follows an occurrence of the pattern on **either** visible
+    /// side (those must stay typeable so the pattern can be extended).
     fn jump_labels(&self) -> Vec<char> {
         let mut labels = jump_label_alphabet();
         if self.jump_pattern.is_empty() {
             return labels;
         }
         let pattern: Vec<char> = self.jump_pattern.chars().collect();
-        let old_side = match self.focus {
-            Focus::Old => true,
-            Focus::New => false,
-            Focus::Files => return labels,
-        };
-        let (top, _, _) = if old_side {
-            (self.old_top, self.old_left, self.old_code_w)
-        } else {
-            (self.new_top, self.new_left, self.new_code_w)
-        };
-        let bottom = top + self.viewport.max(1);
         let mut blocked: Vec<char> = Vec::new();
-        for (row, r) in self.rows.iter().enumerate() {
-            if row < top || row >= bottom {
-                continue;
-            }
-            let Some(text) = row_text(r, old_side) else {
-                continue;
+        for old_side in self.visible_sides() {
+            let (top, _, _) = if old_side {
+                (self.old_top, self.old_left, self.old_code_w)
+            } else {
+                (self.new_top, self.new_left, self.new_code_w)
             };
-            let chars: Vec<char> = text.chars().collect();
-            let mut i = 0;
-            while i + pattern.len() <= chars.len() {
-                if chars_match(&chars[i..i + pattern.len()], &pattern) {
-                    if let Some(&next) = chars.get(i + pattern.len()) {
-                        let lower = next.to_ascii_lowercase();
-                        if !blocked.contains(&lower) {
-                            blocked.push(lower);
+            let bottom = top + self.viewport.max(1);
+            for (row, r) in self.rows.iter().enumerate() {
+                if row < top || row >= bottom {
+                    continue;
+                }
+                let Some(text) = row_text(r, old_side) else {
+                    continue;
+                };
+                let chars: Vec<char> = text.chars().collect();
+                let mut i = 0;
+                while i + pattern.len() <= chars.len() {
+                    if chars_match(&chars[i..i + pattern.len()], &pattern) {
+                        if let Some(&next) = chars.get(i + pattern.len()) {
+                            let lower = next.to_ascii_lowercase();
+                            if !blocked.contains(&lower) {
+                                blocked.push(lower);
+                            }
                         }
+                        i += pattern.len();
+                    } else {
+                        i += 1;
                     }
-                    i += pattern.len();
-                } else {
-                    i += 1;
                 }
             }
         }
@@ -813,15 +805,42 @@ impl App {
         labels
     }
 
-    /// Every visible occurrence of the pattern (case-insensitive) in the focused
-    /// pane's code window, in reading order.
-    fn visible_matches(&self) -> Vec<JumpMatch> {
-        let old_side = match self.focus {
-            Focus::Old => true,
-            Focus::New => false,
-            Focus::Files => return Vec::new(),
+    /// The visible diff panes, focused first.
+    fn visible_sides(&self) -> Vec<bool> {
+        let order = match self.focus {
+            Focus::New => [false, true],
+            _ => [true, false],
         };
+        order
+            .into_iter()
+            .filter(|&side| self.visible(if side { Focus::Old } else { Focus::New }))
+            .collect()
+    }
+
+    /// Occurrences of the pattern in both visible panes, focused pane first and
+    /// nearest-first within each pane.
+    fn jump_visible_matches(&self) -> Vec<JumpMatch> {
         let pattern: Vec<char> = self.jump_pattern.chars().collect();
+        if pattern.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for old_side in self.visible_sides() {
+            let mut side = self.side_matches(old_side, &pattern);
+            let (line, col, width) = if old_side {
+                (self.old_cursor, self.cursor_col(true), self.old_code_w)
+            } else {
+                (self.new_cursor, self.cursor_col(false), self.new_code_w)
+            };
+            sort_by_distance(&mut side, line, col, width.max(1));
+            out.extend(side);
+        }
+        out
+    }
+
+    /// Every visible occurrence of `pattern` (case-insensitive) on one side, in
+    /// reading order.
+    fn side_matches(&self, old_side: bool, pattern: &[char]) -> Vec<JumpMatch> {
         let plen = pattern.len();
         let (top, left, width) = if old_side {
             (self.old_top, self.old_left, self.old_code_w)
@@ -831,9 +850,6 @@ impl App {
         let bottom = top + self.viewport.max(1);
         let right = left + width;
         let mut out = Vec::new();
-        if plen == 0 {
-            return out;
-        }
         let mut line = 0usize;
         for (row, r) in self.rows.iter().enumerate() {
             let Some(text) = row_text(r, old_side) else {
@@ -844,7 +860,7 @@ impl App {
                 let mut i = 0;
                 while i + plen <= chars.len() {
                     // Keep the whole match (and its trailing label) on screen.
-                    if i >= left && i + plen < right && chars_match(&chars[i..i + plen], &pattern) {
+                    if i >= left && i + plen < right && chars_match(&chars[i..i + plen], pattern) {
                         out.push(JumpMatch {
                             old_side,
                             line,
@@ -862,7 +878,8 @@ impl App {
         out
     }
 
-    /// Move the cursor to a match and bring it into view (both axes).
+    /// Move the cursor to a match and bring it into view (both axes), switching
+    /// focus to that pane when the match is on the other side.
     fn jump_to(&mut self, m: &JumpMatch) {
         let last = if m.old_side {
             self.old_total()
@@ -871,14 +888,17 @@ impl App {
         };
         let line = m.line.min(last.saturating_sub(1));
         if m.old_side {
+            self.focus = Focus::Old;
             self.old_cursor = line;
             self.old_col = m.col;
             self.sync_from_old();
         } else {
+            self.focus = Focus::New;
             self.new_cursor = line;
             self.new_col = m.col;
             self.sync_from_new();
         }
+        self.remember_diff();
     }
 
     // ---- `/` search (literal, smartcase, over the whole focused side) ----
@@ -2184,6 +2204,50 @@ mod tests {
         app.load_diff();
         assert!(app.search().is_none());
         assert!(!app.search_input());
+    }
+
+    #[test]
+    fn jump_labels_appear_in_both_panes() {
+        let rows = vec![
+            DiffRow::Ctx("let one".into()),
+            DiffRow::Ctx("let two".into()),
+        ];
+        let mut app = app_with(rows, 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+        app.start_jump();
+        for c in "let".chars() {
+            app.jump_key(KeyCode::Char(c));
+        }
+        let old = app.jump_matches().iter().filter(|m| m.old_side).count();
+        let new = app.jump_matches().iter().filter(|m| !m.old_side).count();
+        assert_eq!((old, new), (2, 2));
+        // The focused pane's matches get the labels first.
+        assert!(app.jump_matches()[0].old_side);
+    }
+
+    #[test]
+    fn jump_can_cross_to_the_other_pane() {
+        let rows = vec![
+            DiffRow::Chg("foo".into(), "bar".into()),
+            DiffRow::Chg("foo".into(), "bar".into()),
+        ];
+        let mut app = app_with(rows, 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+        app.start_jump();
+        for c in "bar".chars() {
+            app.jump_key(KeyCode::Char(c));
+        }
+        // Only the new pane has "bar".
+        assert_eq!(app.jump_matches().len(), 2);
+        assert!(app.jump_matches().iter().all(|m| !m.old_side));
+        // Picking the second label switches focus to the new pane.
+        app.jump_key(KeyCode::Char('s'));
+        assert_eq!(app.focus, Focus::New);
+        assert_eq!(app.new_cursor, 1);
     }
 
     #[test]

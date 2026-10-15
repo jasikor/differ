@@ -55,10 +55,12 @@ Manual refresh for the MVP.
   to the pane). Hunk navigation moved from `n`/`p` to Vim-diff `]c`/`[c`.
 - **Jump (`s`):** done — flash.nvim-faithful (`s` is LazyVim's Flash binding):
   type a pattern of any length (case-insensitive) and labels appear on the
-  visible matches, nearest-first, from flash's home-row-first alphabet
+  visible matches **in both panes** (the focused pane first, then the other),
+  nearest-first within each, from flash's home-row-first alphabet
   `asdfghjklqwertyuiopzxcvbnm` plus uppercase (single characters only; matches
-  past 52 stay unlabelled). A label is never a pattern continuation (flash's
-  `skip` rule), so you can keep typing to narrow the search — that is how the
+  past 52 stay unlabelled). Picking a label on the other pane switches focus to
+  it. A label is never a pattern continuation (flash's `skip` rule, checked on
+  both panes), so you can keep typing to narrow the search — that is how the
   surplus matches stay reachable. Labels draw after the match; `Enter` jumps to
   the nearest, `<BS>` edits the pattern, `Esc` cancels.
 - **Search (`/`):** done — `/` searches the focused pane's whole diff (not just

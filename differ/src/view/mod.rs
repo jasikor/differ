@@ -453,18 +453,21 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
 
         let buf = term.backend().buffer();
-        // Labels are drawn after the match: matches at col 1 and 3 -> cols 2, 4.
+        // Labels are drawn after the match, in both panes now: the old pane's
+        // matches at cols 1 and 3, and the new pane's too.
         let labels: Vec<(u16, char)> = (0..24)
             .filter(|&x| buf[(x, 1)].bg == theme::JUMP_BG)
             .map(|x| (x, buf[(x, 1)].symbol().chars().next().unwrap()))
             .collect();
-        // x = old body (1) + number margin (2) + label column.
-        assert_eq!(labels, vec![(5, 'a'), (7, 's')]);
-        // The matched characters themselves are tinted.
+        // x = body offset + number margin + label column.
+        assert!(labels.contains(&(5, 'a')) && labels.contains(&(7, 's')));
+        assert_eq!(labels.len(), 4);
+        // The matched characters themselves are tinted in both panes.
         let matches: Vec<u16> = (0..24)
             .filter(|&x| buf[(x, 1)].bg == theme::JUMP_MATCH_BG)
             .collect();
-        assert_eq!(matches, vec![4, 6]);
+        assert!(matches.contains(&4) && matches.contains(&6));
+        assert_eq!(matches.len(), 4);
     }
 
     #[test]
