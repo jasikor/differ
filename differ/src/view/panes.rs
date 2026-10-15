@@ -1,7 +1,7 @@
 //! The two code panes (old on the left, new on the right).
 
 use ratatui::{
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
 };
 
@@ -11,26 +11,19 @@ use crate::view::theme::{
     REMOVED_BG, REMOVED_FG, REMOVED_LINE,
 };
 
-fn span_style(kind: Kind, old_side: bool) -> (Option<Color>, Option<Color>, Modifier) {
+fn span_style(kind: Kind) -> (Option<Color>, Option<Color>) {
     let (fg, bg) = match kind {
         Kind::Removed => (REMOVED_FG, REMOVED_BG),
         Kind::Added => (ADDED_FG, ADDED_BG),
         Kind::Changed => (CHANGED_FG, CHANGED_BG),
-        Kind::Equal => return (None, None, Modifier::empty()),
+        Kind::Equal => return (None, None),
     };
-    let modifier = match kind {
-        Kind::Removed => Modifier::CROSSED_OUT,
-        Kind::Added => Modifier::UNDERLINED,
-        _ if old_side => Modifier::CROSSED_OUT,
-        _ => Modifier::UNDERLINED,
-    };
-    (Some(bg), Some(fg), modifier | Modifier::BOLD)
+    (Some(bg), Some(fg))
 }
 
-fn styled(text: String, kind: Kind, old_side: bool, base: Color) -> Span<'static> {
-    let (bg, fg, modifier) = span_style(kind, old_side);
-    let mut span = Span::styled(text, Style::default()).add_modifier(modifier);
-    span = span.bg(bg.unwrap_or(base));
+fn styled(text: String, kind: Kind, base: Color) -> Span<'static> {
+    let (bg, fg) = span_style(kind);
+    let mut span = Span::styled(text, Style::default()).bg(bg.unwrap_or(base));
     if let Some(fg) = fg {
         span = span.fg(fg);
     }
@@ -53,7 +46,7 @@ fn modified_line(old: &str, new: &str, old_side: bool, width: usize) -> Line<'st
     let mut used = 0usize;
     for (text, kind) in segs {
         used += text.chars().count();
-        spans.push(styled(text.clone(), *kind, old_side, MODIFIED_LINE));
+        spans.push(styled(text.clone(), *kind, MODIFIED_LINE));
     }
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used))).bg(MODIFIED_LINE));
     Line::from(spans)
@@ -89,15 +82,15 @@ fn side_line(text: &str, added: bool, old_side: bool, width: usize) -> Line<'sta
     if !present {
         return blank(width);
     }
-    let (fg, modifier, base) = if added {
-        (ADDED_FG, Modifier::UNDERLINED, ADDED_LINE)
+    let (fg, base) = if added {
+        (ADDED_FG, ADDED_LINE)
     } else {
-        (REMOVED_FG, Modifier::CROSSED_OUT, REMOVED_LINE)
+        (REMOVED_FG, REMOVED_LINE)
     };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     // Keep the leading indentation un-emphasised: only the text itself is
-    // struck through (removed) or underlined (added).
+    // tinted; the kind reads from the colour/background alone.
     let lead_len = text.len() - text.trim_start().len();
     let (lead, rest) = text.split_at(lead_len);
     if !lead.is_empty() {
@@ -106,11 +99,7 @@ fn side_line(text: &str, added: bool, old_side: bool, width: usize) -> Line<'sta
     }
     if !rest.is_empty() {
         used += rest.chars().count();
-        spans.push(
-            Span::styled(rest.to_string(), Style::default().fg(fg))
-                .add_modifier(modifier)
-                .bg(base),
-        );
+        spans.push(Span::styled(rest.to_string(), Style::default().fg(fg)).bg(base));
     }
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used))).bg(base));
     Line::from(spans)
