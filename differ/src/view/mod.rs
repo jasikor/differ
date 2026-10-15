@@ -197,10 +197,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_jump_labels(f, app, old_body, new_body, old_off);
     }
 
-    f.render_widget(
-        Paragraph::new(help_line(app, old_kinds.len())).style(theme::dim_style()),
-        help,
-    );
+    let (help_text, cursor_x) = help_line(app, old_kinds.len());
+    f.render_widget(Paragraph::new(help_text).style(theme::dim_style()), help);
+    // Show the terminal cursor while typing a prompt, so there is a caret.
+    if let Some(col) = cursor_x {
+        let x = (help.x + col).min(help.x + help.width.saturating_sub(1));
+        f.set_cursor_position((x, help.y));
+    }
 }
 
 /// Highlight the cursor cell (the cursor line's code at its column) plus a very
@@ -272,8 +275,8 @@ fn draw_jump_labels(f: &mut Frame, app: &App, old_body: Rect, new_body: Rect, ol
     }
 }
 
-/// Tint every visible search match, brighter for the one under the cursor
-/// (vim's `Search` vs `CurSearch`).
+/// Tint every visible search match in **both** panes, brighter for the match
+/// under the focused pane's cursor (vim's `Search` vs `CurSearch`).
 fn draw_search(
     f: &mut Frame,
     app: &App,
@@ -282,44 +285,63 @@ fn draw_search(
     new_body: Rect,
     old_off: usize,
 ) {
-    let (body, top, base, left) = if search.old_side {
-        (old_body, app.old_top, old_off, app.left(true))
-    } else {
-        (new_body, app.new_top, theme::NEW_MARGIN, app.left(false))
-    };
-    if body.width == 0 {
-        return;
-    }
-    let (cur_line, cur_col) = if search.old_side {
-        (app.old_cursor, app.cursor_col(true))
-    } else {
-        (app.new_cursor, app.cursor_col(false))
-    };
     let buf = f.buffer_mut();
-    for hit in &search.matches {
-        let row = hit.line as isize - top as isize;
-        if row < 0 || row >= body.height as isize {
+    for old_side in [true, false] {
+        let (body, top, base, left) = if old_side {
+            (old_body, app.old_top, old_off, app.left(true))
+        } else {
+            (new_body, app.new_top, theme::NEW_MARGIN, app.left(false))
+        };
+        if body.width == 0 {
             continue;
         }
-        let y = body.y + row as u16;
-        let current = hit.line == cur_line && hit.col == cur_col;
-        for i in 0..hit.len {
-            let x = base as isize + hit.col as isize - left as isize + i as isize;
-            if x < 0 || x >= body.width as isize {
+        // The current match is the one under the focused pane's cursor.
+        let current_pos = match (app.focus, old_side) {
+            (Focus::Old, true) => Some((app.old_cursor, app.cursor_col(true))),
+            (Focus::New, false) => Some((app.new_cursor, app.cursor_col(false))),
+            _ => None,
+        };
+        for hit in search.hits(old_side) {
+            let row = hit.line as isize - top as isize;
+            if row < 0 || row >= body.height as isize {
                 continue;
             }
-            let cell = &mut buf[(body.x + x as u16, y)];
-            if current {
-                cell.set_bg(theme::SEARCH_CURRENT_BG);
-                cell.set_fg(theme::SEARCH_CURRENT_FG);
-            } else {
-                cell.set_bg(theme::SEARCH_BG);
+            let y = body.y + row as u16;
+            let current = current_pos == Some((hit.line, hit.col));
+            for i in 0..hit.len {
+                let x = base as isize + hit.col as isize - left as isize + i as isize;
+                if x < 0 || x >= body.width as isize {
+                    continue;
+                }
+                let cell = &mut buf[(body.x + x as u16, y)];
+                if current {
+                    cell.set_bg(theme::SEARCH_CURRENT_BG);
+                    cell.set_fg(theme::SEARCH_CURRENT_FG);
+                } else {
+                    cell.set_bg(theme::SEARCH_BG);
+                }
             }
         }
     }
 }
 
-fn help_line(app: &App, old_total: usize) -> String {
+/// The bottom line, plus the caret column when a prompt is active.
+fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
+    // A live prompt takes over the line, like vim's command line, so it is
+    // never clipped off the end of the (long) key hints.
+    if app.search_input() {
+        let pattern = app.search().map(|s| s.pattern.as_str()).unwrap_or("");
+        let text = format!("/{pattern}");
+        let col = 1 + pattern.chars().count();
+        return (text, Some(col as u16));
+    }
+    if app.jump_state() == JumpState::Active {
+        let pattern = app.jump_pattern();
+        let prefix = "jump: /";
+        let text = format!("{prefix}{pattern}");
+        let col = prefix.chars().count() + pattern.chars().count();
+        return (text, Some(col as u16));
+    }
     let path = app.selected_path().unwrap_or("(no file)");
     let cur = app.old_top.min(old_total);
     let pct = if old_total == 0 {
@@ -332,24 +354,16 @@ fn help_line(app: &App, old_total: usize) -> String {
         Focus::Old => "old",
         Focus::New => "new",
     };
+    // Keep messages near the front so they are visible before the hints clip.
     let msg = if app.message.is_empty() {
         String::new()
     } else {
-        format!("   {}", app.message)
+        format!("{}   ", app.message)
     };
-    let jump = match app.jump_state() {
-        JumpState::Idle => String::new(),
-        JumpState::Active => format!("   jump: /{}", app.jump_pattern()),
-    };
-    let search = if app.search_input() {
-        let pattern = app.search().map(|s| s.pattern.as_str()).unwrap_or("");
-        format!("   /{pattern}")
-    } else {
-        String::new()
-    };
-    format!(
-        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   ^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c ^N/^P change  Spc n/p file  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit{jump}{search}{msg}"
-    )
+    let text = format!(
+        " {path}  {pct}% ({cur}/{old_total})  [{focus}]   {msg}^H/^L focus  h/j/k/l move  w/b/e W/B/E word  0/^/$ line  ]c/[c ^N/^P change  Spc n/p file  gg/G top/bot  s jump  / search  n/N next  zz/zt/zb cursor  ^E/^Y scroll  ^Z zoom  Spc e panel  PgUp/PgDn  R reload  q quit"
+    );
+    (text, None)
 }
 
 #[cfg(test)]
@@ -451,13 +465,34 @@ mod tests {
         app.search_key(KeyCode::Char('a'));
         term.draw(|f| draw(f, &mut app)).unwrap();
 
-        // The preview moves the cursor onto line 1, so line 2's matches keep the
-        // plain search tint: x = old body (1) + number margin (2) + col, at y 3.
+        // The preview moves the cursor onto line 1, so line 2's matches in both
+        // panes keep the plain search tint: x = body offset + number margin +
+        // col, at y 3.
         let buf = term.backend().buffer();
         let tinted: Vec<(u16, u16)> = (0..24)
             .flat_map(|x| (0..5u16).map(move |y| (x, y)))
             .filter(|&(x, y)| buf[(x, y)].bg == theme::SEARCH_BG)
             .collect();
-        assert_eq!(tinted, vec![(3, 3), (5, 3)]);
+        // Both panes highlight: the old pane at x 3 and 5, and the new pane too.
+        assert!(tinted.contains(&(3, 3)) && tinted.contains(&(5, 3)));
+        assert_eq!(tinted.len(), 4);
+    }
+
+    #[test]
+    fn the_search_prompt_replaces_the_help_line() {
+        let mut app = test_app(vec![DiffRow::Ctx("abc".into())], 5);
+        app.focus = Focus::Old;
+        app.old_code_w = 40;
+        app.start_search();
+        app.search_key(ratatui::crossterm::event::KeyCode::Char('a'));
+        let (text, caret) = help_line(&app, 1);
+        assert_eq!(text, "/a");
+        // The caret sits just past the typed pattern.
+        assert_eq!(caret, Some(2));
+        // Once committed, the normal hints come back (no caret).
+        app.search_key(ratatui::crossterm::event::KeyCode::Enter);
+        let (text, caret) = help_line(&app, 1);
+        assert!(text.contains("focus"));
+        assert_eq!(caret, None);
     }
 }

@@ -79,13 +79,28 @@ pub struct SearchHit {
     pub len: usize,
 }
 
-/// The active `/` search: a literal pattern (smartcase) over the whole focused
-/// side, plus its cached matches.
+/// The active `/` search: a literal pattern (smartcase) with its cached matches
+/// on **both** sides, so both panes highlight and `n`/`N` follow the focused one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Search {
-    pub old_side: bool,
     pub pattern: String,
-    pub matches: Vec<SearchHit>,
+    pub old_matches: Vec<SearchHit>,
+    pub new_matches: Vec<SearchHit>,
+}
+
+impl Search {
+    /// Matches for a side.
+    pub fn hits(&self, old_side: bool) -> &[SearchHit] {
+        if old_side {
+            &self.old_matches
+        } else {
+            &self.new_matches
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pattern.is_empty() || (self.old_matches.is_empty() && self.new_matches.is_empty())
+    }
 }
 
 pub struct App {
@@ -844,15 +859,16 @@ impl App {
         self.search_input
     }
 
-    /// Open the search prompt on the focused pane.
+    /// Open the search prompt. From the file list it targets the last diff pane
+    /// (and focuses it) so `/` works from anywhere.
     pub fn start_search(&mut self) {
+        if matches!(self.focus, Focus::Files) {
+            self.focus = self.last_diff;
+        }
         let old_side = match self.focus {
             Focus::Old => true,
             Focus::New => false,
-            Focus::Files => {
-                self.message = "/: focus a diff pane first".into();
-                return;
-            }
+            Focus::Files => return,
         };
         let (line, col) = if old_side {
             (self.old_cursor, self.cursor_col(true))
@@ -861,9 +877,9 @@ impl App {
         };
         self.search_origin = (old_side, line, col);
         self.search = Some(Search {
-            old_side,
             pattern: String::new(),
-            matches: Vec::new(),
+            old_matches: Vec::new(),
+            new_matches: Vec::new(),
         });
         self.search_input = true;
         self.message.clear();
@@ -902,40 +918,44 @@ impl App {
 
     fn commit_search(&mut self) {
         self.search_input = false;
-        let empty_or_no_match = match self.search.as_ref() {
-            Some(s) => s.pattern.is_empty() || s.matches.is_empty(),
+        let empty = match self.search.as_ref() {
+            Some(s) => s.is_empty(),
             None => true,
         };
-        if empty_or_no_match {
+        if empty {
             self.search = None;
             self.restore_search_origin();
             return;
         }
         // Land on the previewed match: the first one after the origin.
+        let side = self.search_origin.0;
         let origin = (self.search_origin.1, self.search_origin.2);
         let hit = match self.search.as_ref() {
-            Some(s) => first_after(&s.matches, origin)
-                .or_else(|| s.matches.first())
+            Some(s) => first_after(s.hits(side), origin)
+                .or_else(|| s.hits(side).first())
                 .copied(),
             None => None,
         };
         if let Some(hit) = hit {
-            let side = self.search.as_ref().map(|s| s.old_side).unwrap_or(true);
             self.search_goto(side, hit);
         }
     }
 
-    /// Recompute matches for the pattern and preview the first match from the
+    /// Recompute matches on **both** sides and preview the first match from the
     /// origin (Vim's `incsearch`); with no match, sit back on the origin.
     fn refresh_search_preview(&mut self) {
         let Some(s) = self.search.as_ref() else {
             return;
         };
-        let (side, pattern) = (s.old_side, s.pattern.clone());
-        let matches = self.scan_search(side, &pattern);
-        let preview = first_after(&matches, (self.search_origin.1, self.search_origin.2)).copied();
+        let pattern = s.pattern.clone();
+        let old_matches = self.scan_search(true, &pattern);
+        let new_matches = self.scan_search(false, &pattern);
+        let side = self.search_origin.0;
+        let hits = if side { &old_matches } else { &new_matches };
+        let preview = first_after(hits, (self.search_origin.1, self.search_origin.2)).copied();
         if let Some(s) = self.search.as_mut() {
-            s.matches = matches;
+            s.old_matches = old_matches;
+            s.new_matches = new_matches;
         }
         match preview {
             Some(hit) => self.search_goto(side, hit),
@@ -944,43 +964,60 @@ impl App {
     }
 
     pub fn search_next(&mut self) {
-        if let Some(hit) = self.search_first(true) {
-            let side = self.search.as_ref().map(|s| s.old_side).unwrap_or(true);
-            self.search_goto(side, hit);
-        }
+        self.search_step(true);
     }
 
     pub fn search_prev(&mut self) {
-        if let Some(hit) = self.search_first(false) {
-            let side = self.search.as_ref().map(|s| s.old_side).unwrap_or(true);
-            self.search_goto(side, hit);
-        }
+        self.search_step(false);
     }
 
-    /// The next/previous match relative to the search side's cursor (wrapping).
-    fn search_first(&self, forward: bool) -> Option<SearchHit> {
-        let s = self.search.as_ref()?;
-        if s.matches.is_empty() {
-            return None;
+    /// Step to the next/previous match **in the focused pane** (wrapping). From
+    /// the file list it targets the last diff pane.
+    fn search_step(&mut self, forward: bool) {
+        if matches!(self.focus, Focus::Files) {
+            self.focus = self.last_diff;
         }
-        let pos = if s.old_side {
+        let old_side = match self.focus {
+            Focus::Old => true,
+            Focus::New => false,
+            Focus::Files => return,
+        };
+        let pos = if old_side {
             (self.old_cursor, self.cursor_col(true))
         } else {
             (self.new_cursor, self.cursor_col(false))
         };
-        let found = if forward {
-            first_after(&s.matches, pos)
-        } else {
-            last_before(&s.matches, pos)
-        };
-        // Wrap around when there is nothing further in that direction.
-        found.copied().or_else(|| {
-            if forward {
-                s.matches.first().copied()
+        let hit = {
+            let Some(s) = self.search.as_ref() else {
+                return;
+            };
+            let hits = s.hits(old_side);
+            if hits.is_empty() {
+                None
             } else {
-                s.matches.last().copied()
+                let found = if forward {
+                    first_after(hits, pos)
+                } else {
+                    last_before(hits, pos)
+                };
+                // Wrap around when there is nothing further in that direction.
+                Some(found.copied().unwrap_or_else(|| {
+                    if forward {
+                        hits[0]
+                    } else {
+                        *hits.last().unwrap()
+                    }
+                }))
             }
-        })
+        };
+        match hit {
+            Some(hit) => self.search_goto(old_side, hit),
+            None => {
+                if let Some(s) = self.search.as_ref() {
+                    self.message = format!("no match here: {}", s.pattern);
+                }
+            }
+        }
     }
 
     fn search_goto(&mut self, old_side: bool, hit: SearchHit) {
@@ -1938,6 +1975,36 @@ mod tests {
     }
 
     #[test]
+    fn search_covers_both_panes_and_n_follows_the_focused_one() {
+        let rows = vec![
+            DiffRow::Ctx("let one".into()),
+            DiffRow::Ctx("let two".into()),
+        ];
+        let mut app = app_with(rows, 5);
+        app.old_code_w = 40;
+        app.new_code_w = 40;
+        app.focus = Focus::Old;
+        app.old_cursor = 0;
+        app.old_col = 0;
+        app.start_search();
+        for c in "let".chars() {
+            app.search_key(KeyCode::Char(c));
+        }
+        {
+            let s = app.search().unwrap();
+            assert_eq!(s.old_matches.len(), 2);
+            assert_eq!(s.new_matches.len(), 2); // both panes are searched
+        }
+        app.search_key(KeyCode::Enter);
+        assert_eq!(app.old_cursor, 1); // committed to the first match after origin
+                                       // Switching to the new pane, `n` walks the new side (wrapping).
+        app.focus = Focus::New;
+        app.new_cursor = 1;
+        app.search_next();
+        assert_eq!(app.new_cursor, 0);
+    }
+
+    #[test]
     fn search_is_smartcase_literal() {
         let mut app = app_with(vec![DiffRow::Ctx("let Let LET".into())], 5);
         app.focus = Focus::Old;
@@ -1980,7 +2047,7 @@ mod tests {
 
         app.search_key(KeyCode::Enter);
         assert!(!app.search_input());
-        assert_eq!(app.search().unwrap().matches.len(), 5);
+        assert_eq!(app.search().unwrap().old_matches.len(), 5);
         // `n` / `N` step and wrap.
         app.search_next();
         assert_eq!(app.old_cursor, 2);
@@ -2029,12 +2096,14 @@ mod tests {
     }
 
     #[test]
-    fn search_needs_a_diff_pane() {
+    fn search_from_the_file_list_targets_a_diff_pane() {
         let mut app = app_with(vec![DiffRow::Ctx("abc".into())], 5);
         app.focus = Focus::Files;
         app.start_search();
-        assert!(!app.search_input());
-        assert!(app.message.contains("focus a diff pane"));
+        // It focuses the last diff pane and opens the prompt there.
+        assert!(app.search_input());
+        assert_eq!(app.focus, Focus::Old);
+        assert!(app.search().is_some());
     }
 
     #[test]
