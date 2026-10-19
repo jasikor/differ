@@ -18,7 +18,11 @@ that visually tie each change together across the two panes.
 
 ```sh
 cargo run -p differ -- --repo /path/to/repo   # defaults to the current directory
+cargo run -p differ -- old.txt new.txt        # compare two files directly
 ```
+
+In direct file mode there is no file panel; the two paths are shown in the pane
+headers, and `R` re-reads both files.
 
 **Keys:** `Ctrl-h`/`Ctrl-l` cycle panels (files / old / new) · `h`/`j`/`k`/`l`
 (or arrows) move · `w`/`b`/`e` by word, `W`/`B`/`E` by WORD · `0`/`^`/`$`

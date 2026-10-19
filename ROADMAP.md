@@ -69,6 +69,10 @@ Manual refresh for the MVP.
   as you type (`incsearch`). `Enter` commits, `n`/`N` step through matches with
   wrapping and scroll them into view, `Esc` restores the origin. Matches are
   tinted, the current one brighter.
+- **Direct file comparison:** done — `differ <old> <new>` compares two files
+  without git (the file panel is hidden, the paths are shown in the pane
+  headers, and `R` re-reads both files). `--repo` and two file arguments are
+  mutually exclusive.
 - **File switching:** done — `Space n`/`Space p` select the next/previous file
   from any focus (or with the panel hidden), so you can move through the change
   set without leaving a diff pane; it stops at the ends and keeps the current

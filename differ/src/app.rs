@@ -1,6 +1,7 @@
 //! Application state, independent of rendering.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::KeyCode;
 
@@ -105,6 +106,9 @@ impl Search {
 
 pub struct App {
     pub repo: Option<Repo>,
+    /// Two files from the command line, compared directly (no git). When set,
+    /// there is no file list and `files` stays empty.
+    pub pair: Option<(PathBuf, PathBuf)>,
     pub files: Vec<git::FileEntry>,
     /// Sidebar rows (directories + files) built from `files`, and the row each
     /// file occupies so movement can skip the directory labels.
@@ -165,9 +169,35 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(start: Option<&std::path::Path>) -> Self {
-        let mut app = App {
+    pub fn new(start: Option<&Path>) -> Self {
+        let mut app = App::blank();
+        match Repo::discover_in(start) {
+            Ok(repo) => {
+                app.repo = Some(repo);
+                app.refresh();
+            }
+            Err(e) => app.message = format!("not a git repository: {e}"),
+        }
+        app
+    }
+
+    /// Compare two files given on the command line, without a repository.
+    pub fn compare(old: &Path, new: &Path) -> Self {
+        let mut app = App::blank();
+        app.pair = Some((old.to_path_buf(), new.to_path_buf()));
+        // There is one comparison, so the file list has nothing to show.
+        app.show_files = false;
+        app.focus = Focus::Old;
+        app.last_diff = Focus::Old;
+        app.load_diff();
+        app
+    }
+
+    /// All fields at their defaults, before any source is loaded.
+    fn blank() -> Self {
+        App {
             repo: None,
+            pair: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -203,19 +233,16 @@ impl App {
             help_lines: Vec::new(),
             key_hint: String::new(),
             message: String::new(),
-        };
-        match Repo::discover_in(start) {
-            Ok(repo) => {
-                app.repo = Some(repo);
-                app.refresh();
-            }
-            Err(e) => app.message = format!("not a git repository: {e}"),
         }
-        app
     }
 
-    /// Re-read the file list and the selected diff.
+    /// Re-read the file list and the selected diff. In direct file mode there
+    /// is no file list; both files are read again instead.
     pub fn refresh(&mut self) {
+        if self.pair.is_some() {
+            self.load_diff();
+            return;
+        }
         let Some(repo) = &self.repo else { return };
         match repo.status() {
             Ok(mut files) => {
@@ -402,7 +429,7 @@ impl App {
     /// off, and neither a diff pane that zoom hides.
     fn visible(&self, f: Focus) -> bool {
         match f {
-            Focus::Files => self.show_files,
+            Focus::Files => self.show_files && self.pair.is_none(),
             _ => Some(f) != self.hidden_pane(),
         }
     }
@@ -432,6 +459,10 @@ impl App {
     /// Toggle the file (git) panel. Hiding it while focused returns focus to the
     /// last diff pane so movement keys keep working; showing it focuses it.
     pub fn toggle_files(&mut self) {
+        // A direct file comparison has no file list to show.
+        if self.pair.is_some() {
+            return;
+        }
         if self.show_files {
             self.show_files = false;
             if self.focus == Focus::Files {
@@ -1351,37 +1382,52 @@ impl App {
         self.search = None;
         self.search_input = false;
         self.rows.clear();
+        self.new_of_old.clear();
+        self.old_of_new.clear();
         self.message.clear();
         self.old_top = 0;
         self.new_top = 0;
         self.old_cursor = 0;
         self.new_cursor = 0;
-        let Some(path) = self.files.get(self.selected).map(|f| f.path.clone()) else {
-            return;
-        };
-        let Some(repo) = &self.repo else { return };
-        let entry = &self.files[self.selected];
-        match repo.before_after(entry) {
-            Ok((old, new)) => {
-                self.rows = model::diff_rows(&old, &new);
-                let (new_of_old, old_of_new) = model::line_maps(&self.rows);
-                self.new_of_old = new_of_old;
-                self.old_of_new = old_of_new;
+        let Some(key) = self.view_key() else { return };
+        if let Some((old_path, new_path)) = self.pair.clone() {
+            match read_pair(&old_path, &new_path) {
+                Ok((old, new)) => self.set_rows(&old, &new),
+                Err(e) => self.message = format!("diff: {e}"),
             }
-            Err(e) => {
-                self.new_of_old.clear();
-                self.old_of_new.clear();
-                self.message = format!("diff: {e}");
+        } else {
+            let Some(repo) = &self.repo else { return };
+            let entry = &self.files[self.selected];
+            match repo.before_after(entry) {
+                Ok((old, new)) => self.set_rows(&old, &new),
+                Err(e) => self.message = format!("diff: {e}"),
             }
         }
-        self.place_view(&path);
+        self.place_view(&key);
     }
 
-    /// Remember the current file's view position.
+    /// Build the diff rows and the sync maps from a before/after pair.
+    fn set_rows(&mut self, old: &str, new: &str) {
+        self.rows = model::diff_rows(old, new);
+        let (new_of_old, old_of_new) = model::line_maps(&self.rows);
+        self.new_of_old = new_of_old;
+        self.old_of_new = old_of_new;
+    }
+
+    /// The key under which the current diff's view position is remembered: the
+    /// selected path in a repo, or the old file in a direct comparison.
+    fn view_key(&self) -> Option<String> {
+        match &self.pair {
+            Some((old, _)) => Some(old.display().to_string()),
+            None => self.selected_path().map(str::to_string),
+        }
+    }
+
+    /// Remember the current diff's view position.
     fn store_view(&mut self) {
-        if let Some(path) = self.files.get(self.selected).map(|f| f.path.clone()) {
+        if let Some(key) = self.view_key() {
             self.view_state.insert(
-                path,
+                key,
                 ViewState {
                     old_cursor: self.old_cursor,
                     new_cursor: self.new_cursor,
@@ -1457,6 +1503,13 @@ impl App {
         }
         self.keep_cols_visible();
     }
+}
+
+/// Read both sides of a direct file comparison, naming the file that failed.
+fn read_pair(old: &Path, new: &Path) -> std::result::Result<(String, String), String> {
+    let old_text = std::fs::read_to_string(old).map_err(|e| format!("{}: {e}", old.display()))?;
+    let new_text = std::fs::read_to_string(new).map_err(|e| format!("{}: {e}", new.display()))?;
+    Ok((old_text, new_text))
 }
 
 /// A flat `(line, col, char)` code position. Each line ends with a `'\n'`
@@ -1710,6 +1763,7 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
     let (new_of_old, old_of_new) = model::line_maps(&rows);
     App {
         repo: None,
+        pair: None,
         files: Vec::new(),
         tree: Vec::new(),
         file_row: Vec::new(),
@@ -1757,6 +1811,7 @@ mod tests {
         let (new_of_old, old_of_new) = model::line_maps(&rows);
         App {
             repo: None,
+            pair: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -2569,5 +2624,83 @@ mod tests {
         app.jump_to_first_hunk();
         assert_eq!(app.old_cursor, 8);
         assert_eq!(app.old_top, 8 - HUNK_CONTEXT);
+    }
+
+    /// Write `old` and `new` into a fresh temp directory, returning both paths
+    /// and the directory (removed at the end of the test).
+    fn temp_pair(name: &str, old: &str, new: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("differ-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old_path = dir.join("old.txt");
+        let new_path = dir.join("new.txt");
+        std::fs::write(&old_path, old).unwrap();
+        std::fs::write(&new_path, new).unwrap();
+        (old_path, new_path, dir)
+    }
+
+    #[test]
+    fn compare_loads_two_files_without_a_repository() {
+        let (old_path, new_path, dir) = temp_pair("compare", "a\nold\nc\n", "a\nnew\nc\n");
+        let mut app = App::compare(&old_path, &new_path);
+
+        assert!(app.repo.is_none());
+        assert!(app.files.is_empty());
+        let pair = app.pair.as_ref().expect("pair mode");
+        assert_eq!(pair.0, old_path);
+        assert_eq!(pair.1, new_path);
+        assert!(!app.show_files);
+        assert_eq!(app.focus, Focus::Old);
+        assert!(app.message.is_empty());
+        assert!(matches!(
+            app.rows.get(1),
+            Some(DiffRow::Chg(o, n)) if o == "old" && n == "new"
+        ));
+
+        // R re-reads both files from disk.
+        std::fs::write(&new_path, "a\nnewer\nc\n").unwrap();
+        app.refresh();
+        assert!(matches!(
+            app.rows.get(1),
+            Some(DiffRow::Chg(_, n)) if n == "newer"
+        ));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compare_reports_a_missing_file_and_recovers_on_reload() {
+        let (old_path, _, dir) = temp_pair("missing", "a\n", "a\n");
+        let missing = dir.join("absent.txt");
+        let mut app = App::compare(&old_path, &missing);
+
+        assert!(app.rows.is_empty());
+        assert!(app.message.contains("absent.txt"), "msg: {}", app.message);
+
+        // Creating the file and reloading recovers.
+        std::fs::write(&missing, "b\n").unwrap();
+        app.refresh();
+        assert!(app.message.is_empty(), "msg: {}", app.message);
+        assert!(!app.rows.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn file_compare_has_no_file_panel_focus() {
+        let (old_path, new_path, dir) = temp_pair("focus", "a\n", "a\n");
+        let mut app = App::compare(&old_path, &new_path);
+
+        app.focus_next();
+        assert_eq!(app.focus, Focus::New);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+        // There is no file list to step onto.
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Old);
+        // And it cannot be shown either.
+        app.toggle_files();
+        assert!(!app.show_files);
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }

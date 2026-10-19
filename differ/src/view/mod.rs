@@ -134,13 +134,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    f.render_widget(Paragraph::new(" old").style(old_style), old_head);
+    // A direct file comparison shows the paths; a repo diff names the sides.
+    let (old_title, new_title) = match app.pair.as_ref() {
+        Some((old, new)) => (
+            format!(" old  {}", old.display()),
+            format!(" new  {}", new.display()),
+        ),
+        None => (" old".to_string(), " new".to_string()),
+    };
+    f.render_widget(Paragraph::new(old_title).style(old_style), old_head);
     f.render_widget(
         Paragraph::new(panes::build_side(&app.rows, true, old_w, app.left(true)))
             .scroll((old_top as u16, 0)),
         old_body,
     );
-    f.render_widget(Paragraph::new(" new").style(new_style), new_head);
+    f.render_widget(Paragraph::new(new_title).style(new_style), new_head);
     f.render_widget(
         Paragraph::new(panes::build_side(&app.rows, false, new_w, app.left(false)))
             .scroll((new_top as u16, 0)),
@@ -368,7 +376,10 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
     if !app.key_hint.is_empty() {
         return (format!(" {}", app.key_hint), None);
     }
-    let path = app.selected_path().unwrap_or("(no file)");
+    let path = match app.pair.as_ref() {
+        Some((old, new)) => format!("{} → {}", old.display(), new.display()),
+        None => app.selected_path().unwrap_or("(no file)").to_string(),
+    };
     let cur = app.old_top.min(old_total);
     let pct = if old_total == 0 {
         100
@@ -521,6 +532,19 @@ mod tests {
         let (text, caret) = help_line(&app, 1);
         assert!(text.contains("? help"));
         assert_eq!(caret, None);
+    }
+
+    #[test]
+    fn file_pair_paths_replace_the_side_labels() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.pair = Some(("old.txt".into(), "new.txt".into()));
+        app.show_files = false;
+        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let top: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(top.contains("old  old.txt"), "header: {top:?}");
+        assert!(top.contains("new  new.txt"), "header: {top:?}");
     }
 
     #[test]

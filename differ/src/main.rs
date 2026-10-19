@@ -16,24 +16,29 @@ use command::Outcome;
 use keymap::{Key, Keymap, Resolution};
 
 fn main() -> io::Result<()> {
-    let repo = match parse_args() {
-        Ok(repo) => repo,
+    let args = match parse_args() {
+        Ok(args) => args,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(2);
         }
     };
     let mut terminal = ratatui::init();
-    let mut app = App::new(repo.as_deref());
+    let mut app = match args {
+        Args::Repo(repo) => App::new(repo.as_deref()),
+        Args::Files(old, new) => App::compare(&old, &new),
+    };
     let mut keymap = Keymap::default_bindings();
-    app.help_lines = build_help();
+    app.help_lines = build_help(app.pair.is_none());
     let result = run(&mut terminal, &mut app, &mut keymap);
     ratatui::restore();
     result
 }
 
-/// The full-screen help page: related keys grouped on one row.
-fn build_help() -> Vec<String> {
+/// The full-screen help page: related keys grouped on one row. `files_panel`
+/// is false when two files are compared directly, where the file list (and its
+/// keys) does not exist.
+fn build_help(files_panel: bool) -> Vec<String> {
     const HELP: &[(&str, &str, &str)] = &[
         ("Panels", "Ctrl-h / Ctrl-l", "focus previous / next panel"),
         ("Panels", "Space e", "show/hide the file (git) panel"),
@@ -85,6 +90,10 @@ fn build_help() -> Vec<String> {
     let mut lines = Vec::new();
     let mut section = "";
     for (sec, keys, desc) in HELP {
+        // Without a file list, drop its section and the panel toggle.
+        if !files_panel && (*sec == "Files" || *keys == "Space e") {
+            continue;
+        }
         if *sec != section {
             if !section.is_empty() {
                 lines.push(String::new());
@@ -97,24 +106,72 @@ fn build_help() -> Vec<String> {
     lines
 }
 
-/// Parse `[--repo <path>]` (alias `-r`); `None` means the current directory.
-fn parse_args() -> Result<Option<PathBuf>, String> {
+/// What the command line asked for: browse a repository, or compare two files.
+#[derive(Debug, PartialEq, Eq)]
+enum Args {
+    /// The repository start directory; `None` means the current directory.
+    Repo(Option<PathBuf>),
+    /// The old and new file to compare directly.
+    Files(PathBuf, PathBuf),
+}
+
+fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+/// Parse `[--repo <path>]` or `<old-file> <new-file>`. `--` ends option
+/// parsing, so file names may start with a dash.
+fn parse_args_from<I: Iterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut repo = None;
-    let mut args = std::env::args().skip(1);
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut options = true;
+    let mut args = args;
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-r" | "--repo" => {
-                let value = args.next().ok_or("--repo needs a path")?;
-                repo = Some(PathBuf::from(value));
-            }
-            "-h" | "--help" => {
-                println!("differ - side-by-side git diff viewer\n\nusage: differ [--repo <path>]");
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument: {other}")),
+        if options && arg == "--" {
+            options = false;
+            continue;
         }
+        if options {
+            match arg.as_str() {
+                "-r" | "--repo" => {
+                    let value = args.next().ok_or("--repo needs a path")?;
+                    repo = Some(PathBuf::from(value));
+                    continue;
+                }
+                "-h" | "--help" => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                other if other.starts_with('-') && other != "-" => {
+                    return Err(format!("unknown argument: {other}"));
+                }
+                _ => {}
+            }
+        }
+        files.push(PathBuf::from(arg));
     }
-    Ok(repo)
+    match (repo, files.len()) {
+        (Some(_), 1..) => Err("--repo cannot be combined with files to compare".to_string()),
+        (Some(repo), _) => Ok(Args::Repo(Some(repo))),
+        (None, 0) => Ok(Args::Repo(None)),
+        (None, 2) => {
+            let mut paths = files.into_iter();
+            Ok(Args::Files(
+                paths.next().ok_or("expected two files")?,
+                paths.next().ok_or("expected two files")?,
+            ))
+        }
+        (None, n) => Err(format!("expected two files to compare, got {n}")),
+    }
+}
+
+fn print_help() {
+    println!(
+        "differ - side-by-side diff viewer\n\n\
+         usage:\n  \
+         differ [--repo <path>]\n  \
+         differ <old-file> <new-file>"
+    );
 }
 
 fn run(
@@ -153,5 +210,68 @@ fn run(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(list: &[&str]) -> Result<Args, String> {
+        parse_args_from(list.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn no_arguments_browses_the_current_directory() {
+        assert_eq!(parse(&[]).unwrap(), Args::Repo(None));
+    }
+
+    #[test]
+    fn repo_flag_takes_a_path() {
+        assert_eq!(
+            parse(&["--repo", "some/repo"]).unwrap(),
+            Args::Repo(Some("some/repo".into()))
+        );
+        assert_eq!(
+            parse(&["-r", "some/repo"]).unwrap(),
+            Args::Repo(Some("some/repo".into()))
+        );
+    }
+
+    #[test]
+    fn two_positional_arguments_compare_files() {
+        assert_eq!(
+            parse(&["old.txt", "new.txt"]).unwrap(),
+            Args::Files("old.txt".into(), "new.txt".into())
+        );
+    }
+
+    #[test]
+    fn double_dash_allows_dashed_file_names() {
+        assert_eq!(
+            parse(&["--", "-old.txt", "-new.txt"]).unwrap(),
+            Args::Files("-old.txt".into(), "-new.txt".into())
+        );
+    }
+
+    #[test]
+    fn rejects_the_wrong_number_of_files() {
+        assert!(parse(&["one.txt"]).is_err());
+        assert!(parse(&["a.txt", "b.txt", "c.txt"]).is_err());
+    }
+
+    #[test]
+    fn rejects_repo_combined_with_files() {
+        assert!(parse(&["--repo", "repo", "a.txt", "b.txt"]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_options() {
+        assert!(parse(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn repo_flag_needs_a_value() {
+        assert!(parse(&["--repo"]).is_err());
     }
 }
