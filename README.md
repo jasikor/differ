@@ -39,6 +39,12 @@ scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused pane ·
 `R` reload · `q` quit · `Esc` cancels a pending key · `?` full-screen key
 help (press a prefix like `Space` to see its options in the status line).
 
+## Versioning
+
+Every merged user-facing feature bumps the minor version (`0.2.0`, `0.3.0`, …);
+fix-only changes bump the patch (`0.2.1`). The help screen shows the package
+version, short commit hash and commit timestamp. Releases are tagged `vX.Y.Z`.
+
 ## License
 
 GPL-3.0-only — see [LICENSE](LICENSE). Copyleft: if you distribute a modified

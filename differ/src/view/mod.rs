@@ -20,6 +20,11 @@ use crate::model;
 /// Width of the file-list column.
 const FILES_W: u16 = 32;
 
+/// Build metadata stamped by `build.rs`.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const COMMIT: &str = env!("DIFFER_GIT_HASH");
+const COMMIT_TIME: &str = env!("DIFFER_COMMIT_TIME");
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     if app.help_open {
         draw_help(f, app);
@@ -418,8 +423,7 @@ fn draw_help(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).style(theme::dim_style()), body);
     f.render_widget(
         Paragraph::new(format!(
-            " differ {}    keys    j/k scroll    ? / Esc close",
-            env!("CARGO_PKG_VERSION")
+            " differ {VERSION} ({COMMIT}, {COMMIT_TIME})    keys    j/k scroll    ? / Esc close"
         ))
         .style(theme::dim_style()),
         footer,
@@ -665,6 +669,8 @@ mod tests {
         assert!(text.contains("Panels"));
         assert!(text.contains("toggle file panel"));
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(text.contains(env!("DIFFER_GIT_HASH")));
+        assert!(text.contains(env!("DIFFER_COMMIT_TIME")));
 
         // With help closed, the which-key hint owns the bottom line.
         app.help_open = false;
