@@ -417,7 +417,11 @@ fn draw_help(f: &mut Frame, app: &App) {
         .collect();
     f.render_widget(Paragraph::new(lines).style(theme::dim_style()), body);
     f.render_widget(
-        Paragraph::new(" differ keys    j/k scroll    ? / Esc close").style(theme::dim_style()),
+        Paragraph::new(format!(
+            " differ {}    keys    j/k scroll    ? / Esc close",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .style(theme::dim_style()),
         footer,
     );
 }
@@ -660,6 +664,7 @@ mod tests {
             .join("\n");
         assert!(text.contains("Panels"));
         assert!(text.contains("toggle file panel"));
+        assert!(text.contains(env!("CARGO_PKG_VERSION")));
 
         // With help closed, the which-key hint owns the bottom line.
         app.help_open = false;
