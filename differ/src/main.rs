@@ -1,11 +1,11 @@
 mod app;
 mod command;
-mod git;
 mod keymap;
-mod model;
-mod symbol;
-mod tree;
 mod view;
+
+// The data layer is shared with the other front ends; keep the crate-local
+// names so `crate::model`, `crate::git` and friends still resolve.
+pub use differ_core::{git, model, symbol, tree};
 
 use std::io;
 use std::path::PathBuf;
