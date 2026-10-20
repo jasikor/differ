@@ -1,0 +1,36 @@
+name: Tag release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the package version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' differ/Cargo.toml | head -n 1)
+          test -n "$version"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag if it is missing
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists"
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"

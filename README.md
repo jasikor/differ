@@ -43,7 +43,9 @@ help (press a prefix like `Space` to see its options in the status line).
 
 Every merged user-facing feature bumps the minor version (`0.2.0`, `0.3.0`, …);
 fix-only changes bump the patch (`0.2.1`). The help screen shows the package
-version, short commit hash and commit timestamp. Releases are tagged `vX.Y.Z`.
+version, short commit hash and commit timestamp. A push to `main` tags the
+current version as `vX.Y.Z` automatically when that tag does not exist yet; the
+version bump itself stays a manual part of the feature branch.
 
 ## License
 
