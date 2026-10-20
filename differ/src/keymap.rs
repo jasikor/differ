@@ -152,6 +152,10 @@ impl Keymap {
             one(PageUp, Command::PageUp),
             // Jump to the top / bottom of the focused region (vim's gg / G).
             two('g', 'g', Command::Top),
+            // Naive symbol navigation (ripgrep-backed).
+            two('g', 'd', Command::GotoDefinition),
+            two('g', 'r', Command::GotoReferences),
+            ctrl(Char('o'), Command::Back),
             one(Char('G'), Command::Bottom),
             one(Char('R'), Command::Reload),
         ])
@@ -308,6 +312,25 @@ mod tests {
         // A lone g followed by something else clears without running.
         assert_eq!(km.feed(plain('g')), Resolution::Pending);
         assert_eq!(km.feed(plain('j')), Resolution::None);
+    }
+
+    #[test]
+    fn gd_gr_and_ctrl_o_drive_symbol_navigation() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain('g')), Resolution::Pending);
+        assert_eq!(
+            km.feed(plain('d')),
+            Resolution::Run(Command::GotoDefinition)
+        );
+        assert_eq!(km.feed(plain('g')), Resolution::Pending);
+        assert_eq!(
+            km.feed(plain('r')),
+            Resolution::Run(Command::GotoReferences)
+        );
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('o'))),
+            Resolution::Run(Command::Back)
+        );
     }
 
     #[test]

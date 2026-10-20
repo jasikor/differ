@@ -66,6 +66,12 @@ pub enum Command {
     /// Jump to the next / previous search match.
     SearchNext,
     SearchPrev,
+    /// Go to the definition of the symbol under the cursor (ripgrep-based).
+    GotoDefinition,
+    /// List the references to the symbol under the cursor.
+    GotoReferences,
+    /// Return from a symbol jump.
+    Back,
     /// Select the next / previous file, whatever has focus.
     NextFile,
     PrevFile,
@@ -110,6 +116,9 @@ impl Command {
             Command::Search => app.start_search(),
             Command::SearchNext => app.search_next(),
             Command::SearchPrev => app.search_prev(),
+            Command::GotoDefinition => app.goto_definition(),
+            Command::GotoReferences => app.goto_references(),
+            Command::Back => app.go_back(),
             Command::NextFile => app.next_file(),
             Command::PrevFile => app.prev_file(),
             Command::Help => app.toggle_help(),
@@ -154,6 +163,9 @@ impl Command {
             Command::Search => "search",
             Command::SearchNext => "next match",
             Command::SearchPrev => "previous match",
+            Command::GotoDefinition => "go to definition",
+            Command::GotoReferences => "go to references",
+            Command::Back => "back",
             Command::NextFile => "next file",
             Command::PrevFile => "previous file",
             Command::Help => "help",

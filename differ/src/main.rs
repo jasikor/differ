@@ -3,6 +3,7 @@ mod command;
 mod git;
 mod keymap;
 mod model;
+mod symbol;
 mod tree;
 mod view;
 
@@ -65,6 +66,8 @@ fn build_help(files_panel: bool) -> Vec<String> {
         ),
         ("Search", "/", "search the pane (literal, smartcase)"),
         ("Search", "n / N", "next / previous match"),
+        ("Symbols", "gd / gr", "definition / references (ripgrep)"),
+        ("Symbols", "Ctrl-o", "back after a symbol jump"),
         ("Jump", "s", "type a pattern, then a label to jump"),
         (
             "Files",
@@ -185,6 +188,11 @@ fn run(
         terminal.draw(|f| view::draw(f, app))?;
         if let Event::Key(key) = event::read()? {
             let key = Key::from_event(key);
+            // The symbol result list is modal (j/k move, Enter open, Esc close).
+            if app.locations_active() {
+                app.locations_key(key.code);
+                continue;
+            }
             // The help page captures keys while it is open (j/k scroll, close).
             if app.help_open {
                 match key.code {

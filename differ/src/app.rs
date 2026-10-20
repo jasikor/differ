@@ -7,6 +7,7 @@ use ratatui::crossterm::event::KeyCode;
 
 use crate::git::{self, Repo};
 use crate::model::{self, DiffRow};
+use crate::symbol::{self, Location, SearchKind};
 use crate::tree;
 
 /// Context lines kept above a jumped-to hunk.
@@ -47,6 +48,21 @@ struct ViewState {
     new_cursor: usize,
     old_top: usize,
     new_top: usize,
+}
+
+/// How to get back after a symbol jump changed the file or the view mode.
+#[derive(Clone)]
+struct ReturnPoint {
+    pair: Option<(PathBuf, PathBuf)>,
+    selected_path: Option<String>,
+    old_cursor: usize,
+    new_cursor: usize,
+    old_top: usize,
+    new_top: usize,
+    focus: Focus,
+    zoom: Option<Focus>,
+    show_files: bool,
+    last_diff: Focus,
 }
 
 /// The `s` jump: press it, type a pattern, then a label to teleport there.
@@ -104,6 +120,13 @@ impl Search {
     }
 }
 
+/// The symbol-search results overlay (`gd` / `gr`).
+pub struct LocationList {
+    pub title: String,
+    pub items: Vec<Location>,
+    pub selected: usize,
+}
+
 pub struct App {
     pub repo: Option<Repo>,
     /// Two files from the command line, compared directly (no git). When set,
@@ -159,6 +182,10 @@ pub struct App {
     search_input: bool,
     /// Where the search started, to preview around and to restore on cancel.
     search_origin: (bool, usize, usize),
+    /// Symbol-search results, shown as a modal list while non-`None`.
+    pub locations: Option<LocationList>,
+    /// Places to return to after symbol jumps (`Ctrl-o`).
+    back: Vec<ReturnPoint>,
     /// Full-screen help page (`Space ?`).
     pub help_open: bool,
     pub help_scroll: usize,
@@ -228,6 +255,8 @@ impl App {
             search: None,
             search_input: false,
             search_origin: (true, 0, 0),
+            locations: None,
+            back: Vec::new(),
             help_open: false,
             help_scroll: 0,
             help_lines: Vec::new(),
@@ -1204,6 +1233,275 @@ impl App {
         out
     }
 
+    // ---- symbol navigation (naive, ripgrep-backed) ----
+
+    pub fn goto_definition(&mut self) {
+        self.find_symbol(SearchKind::Definition);
+    }
+
+    pub fn goto_references(&mut self) {
+        self.find_symbol(SearchKind::References);
+    }
+
+    pub fn locations_active(&self) -> bool {
+        self.locations.is_some()
+    }
+
+    /// Keys while the `gd`/`gr` result list is open.
+    pub fn locations_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.locations = None;
+                return;
+            }
+            KeyCode::Enter => {
+                let loc = self
+                    .locations
+                    .as_ref()
+                    .and_then(|list| list.items.get(list.selected))
+                    .cloned();
+                self.locations = None;
+                if let Some(loc) = loc {
+                    self.open_location(loc);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(list) = self.locations.as_mut() else {
+            return;
+        };
+        let last = list.items.len().saturating_sub(1);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => list.selected = (list.selected + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => list.selected = list.selected.saturating_sub(1),
+            KeyCode::Char('g') => list.selected = 0,
+            KeyCode::Char('G') => list.selected = last,
+            KeyCode::PageDown => list.selected = (list.selected + 10).min(last),
+            KeyCode::PageUp => list.selected = list.selected.saturating_sub(10),
+            _ => {}
+        }
+    }
+
+    fn find_symbol(&mut self, kind: SearchKind) {
+        self.locations = None;
+        let Some(word) = self.word_under_cursor() else {
+            self.message = "no symbol under the cursor".to_string();
+            return;
+        };
+        let Some(root) = self.search_root() else {
+            self.message = "no directory to search".to_string();
+            return;
+        };
+        match symbol::find(&root, &word, kind) {
+            Ok(items) if items.is_empty() => {
+                self.message = format!("no {} found for `{word}`", kind.noun());
+            }
+            Ok(mut items) if kind == SearchKind::Definition && items.len() == 1 => {
+                self.message.clear();
+                self.open_location(items.remove(0));
+            }
+            Ok(items) => {
+                self.message.clear();
+                self.locations = Some(LocationList {
+                    title: format!("{} `{word}`", kind.title()),
+                    items,
+                    selected: 0,
+                });
+            }
+            Err(e) => self.message = e,
+        }
+    }
+
+    /// The identifier under (or immediately after) the focused cursor.
+    fn word_under_cursor(&self) -> Option<String> {
+        let (chars, col) = self.focused_line()?;
+        if chars.is_empty() {
+            return None;
+        }
+        let at = col.min(chars.len() - 1);
+        let at = if is_symbol_char(chars[at]) {
+            at
+        } else {
+            chars[at..]
+                .iter()
+                .position(|c| is_symbol_char(*c))
+                .map(|offset| at + offset)?
+        };
+        let mut start = at;
+        while start > 0 && is_symbol_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = at;
+        while end + 1 < chars.len() && is_symbol_char(chars[end + 1]) {
+            end += 1;
+        }
+        Some(chars[start..=end].iter().collect())
+    }
+
+    fn search_root(&self) -> Option<PathBuf> {
+        if let Some(repo) = &self.repo {
+            return Some(absolute(repo.root()));
+        }
+        let (_, new) = self.pair.as_ref()?;
+        let path = absolute(new);
+        Some(match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        })
+    }
+
+    fn current_new_path(&self) -> Option<PathBuf> {
+        if let Some((_, new)) = &self.pair {
+            return Some(absolute(new));
+        }
+        let repo = self.repo.as_ref()?;
+        let path = self.selected_path()?;
+        Some(absolute(&repo.root().join(path)))
+    }
+
+    fn current_old_path(&self) -> Option<PathBuf> {
+        self.pair.as_ref().map(|(old, _)| absolute(old))
+    }
+
+    fn open_location(&mut self, loc: Location) {
+        let target = absolute(&loc.path);
+        if self.current_new_path().as_deref() == Some(target.as_path()) {
+            self.jump_to_location(false, &loc);
+            return;
+        }
+        if self.current_old_path().as_deref() == Some(target.as_path()) {
+            self.jump_to_location(true, &loc);
+            return;
+        }
+
+        // A changed file already in the repo's list: open its diff and jump.
+        let repo_relative = self.repo.as_ref().and_then(|repo| {
+            target
+                .strip_prefix(absolute(repo.root()))
+                .ok()
+                .map(|rel| rel.to_string_lossy().into_owned())
+        });
+        if let Some(relative) = repo_relative {
+            if let Some(index) = self.files.iter().position(|file| file.path == relative) {
+                self.remember();
+                self.selected = index;
+                self.load_diff();
+                self.jump_to_location(false, &loc);
+                return;
+            }
+        }
+
+        // Anything else (an unchanged file, a dependency source) gets a
+        // standalone view of the file, with `Ctrl-o` returning here.
+        if std::fs::read_to_string(&target).is_err() {
+            self.message = format!("cannot open {}", target.display());
+            return;
+        }
+        self.remember();
+        self.pair = Some((target.clone(), target));
+        self.show_files = false;
+        self.load_diff();
+        self.jump_to_location(false, &loc);
+    }
+
+    fn jump_to_location(&mut self, old_side: bool, loc: &Location) {
+        let col = char_col_at(loc);
+        if old_side {
+            self.old_cursor = loc.line.min(self.old_total().saturating_sub(1));
+            self.old_col = col;
+            self.focus = Focus::Old;
+            self.last_diff = Focus::Old;
+            self.frame(true, self.old_cursor, HUNK_CONTEXT);
+        } else {
+            self.new_cursor = loc.line.min(self.new_total().saturating_sub(1));
+            self.new_col = col;
+            self.focus = Focus::New;
+            self.last_diff = Focus::New;
+            self.frame(false, self.new_cursor, HUNK_CONTEXT);
+        }
+        self.message.clear();
+    }
+
+    fn remember(&mut self) {
+        let point = self.return_point();
+        if self.back.len() >= 50 {
+            self.back.remove(0);
+        }
+        self.back.push(point);
+    }
+
+    fn return_point(&self) -> ReturnPoint {
+        ReturnPoint {
+            pair: self.pair.clone(),
+            selected_path: self.selected_path().map(str::to_string),
+            old_cursor: self.old_cursor,
+            new_cursor: self.new_cursor,
+            old_top: self.old_top,
+            new_top: self.new_top,
+            focus: self.focus,
+            zoom: self.zoom,
+            show_files: self.show_files,
+            last_diff: self.last_diff,
+        }
+    }
+
+    /// Return from a symbol jump (`Ctrl-o`), restoring the previous file/view.
+    pub fn go_back(&mut self) {
+        let Some(point) = self.back.pop() else {
+            self.message = "no previous location".to_string();
+            return;
+        };
+        if let Some((old, new)) = point.pair {
+            self.pair = Some((old, new));
+            self.show_files = point.show_files;
+            self.load_diff();
+        } else {
+            self.pair = None;
+            self.show_files = point.show_files;
+            if let Some(repo) = self.repo.clone() {
+                match repo.status() {
+                    Ok(mut files) => {
+                        tree::order(&mut files);
+                        self.files = files;
+                    }
+                    Err(e) => self.message = format!("status: {e}"),
+                }
+                self.rebuild_tree();
+                if let Some(path) = &point.selected_path {
+                    if let Some(index) = self.files.iter().position(|file| &file.path == path) {
+                        self.selected = index;
+                    }
+                }
+                self.selected = self.selected.min(self.files.len().saturating_sub(1));
+                self.load_diff();
+            }
+        }
+        let vp = self.viewport.max(1);
+        self.old_cursor = clamp_line(point.old_cursor as isize, self.old_total());
+        self.new_cursor = clamp_line(point.new_cursor as isize, self.new_total());
+        self.old_top = point.old_top.min(self.old_total().saturating_sub(vp));
+        self.new_top = point.new_top.min(self.new_total().saturating_sub(vp));
+        self.focus = point.focus;
+        self.zoom = point.zoom;
+        self.last_diff = point.last_diff;
+        self.keep_cols_visible();
+        self.message.clear();
+    }
+
+    /// A path as shown in the result list: repo-relative when possible.
+    pub fn location_label(&self, path: &Path) -> String {
+        if let Some(repo) = &self.repo {
+            if let Ok(rel) = path.strip_prefix(repo.root()) {
+                return rel.display().to_string();
+            }
+            if let Ok(rel) = path.strip_prefix(absolute(repo.root())) {
+                return rel.display().to_string();
+            }
+        }
+        path.display().to_string()
+    }
+
     // ---- cursor-line placement (vim's zz / zt / zb) ----
 
     /// Frame the focused pane's cursor on `want_row`, keeping the other pane
@@ -1533,6 +1831,37 @@ fn clamp_col(col: usize, len: usize) -> usize {
     }
 }
 
+fn is_symbol_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Canonicalise when possible, so paths from different sources compare equal.
+fn absolute(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Convert ripgrep's byte column into the character column the cursor uses.
+fn char_col(text: &str, byte_col: usize) -> usize {
+    let end = byte_col.min(text.len());
+    match text.get(..end) {
+        Some(prefix) => prefix.chars().count(),
+        None => text.chars().count(),
+    }
+}
+
+/// Re-read the target line when ripgrep omitted a very long line, so the
+/// column still lands on the right character.
+fn char_col_at(loc: &Location) -> usize {
+    std::fs::read_to_string(&loc.path)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .nth(loc.line)
+                .map(|line| char_col(line, loc.byte_col))
+        })
+        .unwrap_or_else(|| char_col(&loc.text, loc.byte_col))
+}
+
 /// Vim's word char. `big` selects a WORD: any run of non-blank characters
 /// (`W`/`B`/`E`), versus a word of letters, digits and underscore (`w`/`b`/`e`).
 fn is_word_char(c: char, big: bool) -> bool {
@@ -1794,6 +2123,8 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         search: None,
         search_input: false,
         search_origin: (true, 0, 0),
+        locations: None,
+        back: Vec::new(),
         help_open: false,
         help_scroll: 0,
         help_lines: Vec::new(),
@@ -1842,12 +2173,106 @@ mod tests {
             search: None,
             search_input: false,
             search_origin: (true, 0, 0),
+            locations: None,
+            back: Vec::new(),
             help_open: false,
             help_scroll: 0,
             help_lines: Vec::new(),
             key_hint: String::new(),
             message: String::new(),
         }
+    }
+
+    #[test]
+    fn word_under_cursor_reads_the_focused_side() {
+        let mut app = app_with(vec![DiffRow::Ctx("fn helper() {}".into())], 5);
+        app.focus = Focus::New;
+        app.new_cursor = 0;
+        app.new_col = 4;
+        assert_eq!(app.word_under_cursor().as_deref(), Some("helper"));
+        app.new_col = 0;
+        assert_eq!(app.word_under_cursor().as_deref(), Some("fn"));
+        app.focus = Focus::Files;
+        assert_eq!(app.word_under_cursor(), None);
+    }
+
+    #[test]
+    fn location_list_moves_and_closes() {
+        let mut app = app_with(vec![DiffRow::Ctx("x".into())], 5);
+        let items = (0..3)
+            .map(|i| Location {
+                path: PathBuf::from(format!("f{i}.rs")),
+                line: i,
+                byte_col: 0,
+                text: String::new(),
+            })
+            .collect();
+        app.locations = Some(LocationList {
+            title: "References `x`".into(),
+            items,
+            selected: 0,
+        });
+        app.locations_key(KeyCode::Char('j'));
+        app.locations_key(KeyCode::Char('j'));
+        assert_eq!(app.locations.as_ref().unwrap().selected, 2);
+        app.locations_key(KeyCode::Char('j'));
+        assert_eq!(app.locations.as_ref().unwrap().selected, 2);
+        app.locations_key(KeyCode::Char('k'));
+        assert_eq!(app.locations.as_ref().unwrap().selected, 1);
+        app.locations_key(KeyCode::Char('G'));
+        assert_eq!(app.locations.as_ref().unwrap().selected, 2);
+        app.locations_key(KeyCode::Esc);
+        assert!(!app.locations_active());
+    }
+
+    #[test]
+    fn goto_definition_opens_the_file_and_back_returns() {
+        if std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "differ-goto-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old_path = dir.join("old.txt");
+        let new_path = dir.join("new.txt");
+        let other_path = dir.join("other.rs");
+        std::fs::write(&old_path, "fn caller() {\n}\n").unwrap();
+        std::fs::write(&new_path, "fn caller() {\n    helper();\n}\n").unwrap();
+        std::fs::write(&other_path, "fn helper() {}\n").unwrap();
+
+        let mut app = App::compare(&old_path, &new_path);
+        app.focus = Focus::New;
+        app.new_cursor = 1;
+        app.set_col(4);
+
+        app.goto_definition();
+        let opened = app.pair.as_ref().expect("external view");
+        assert_eq!(opened.1, other_path, "definition opens its file");
+        assert_eq!(app.new_cursor, 0);
+        assert_eq!(app.focus, Focus::New);
+
+        app.go_back();
+        let restored = app.pair.as_ref().expect("original pair");
+        assert_eq!(restored.0, old_path);
+        assert_eq!(restored.1, new_path);
+        assert_eq!(app.new_cursor, 1);
+
+        app.goto_references();
+        let list = app.locations.as_ref().expect("references list");
+        assert_eq!(list.items.len(), 2);
+        app.locations_key(KeyCode::Esc);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Two changed lines split by context, so `]c`/`[c` have somewhere to go:

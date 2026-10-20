@@ -8,9 +8,9 @@ pub mod theme;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::Color,
-    text::Line,
-    widgets::Paragraph,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Clear, Paragraph},
     Frame,
 };
 
@@ -210,6 +210,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_jump_labels(f, app, old_body, new_body, old_off);
     }
 
+    // Symbol results sit on top of the panes until a jump or Esc.
+    if app.locations_active() {
+        draw_locations(f, app);
+    }
+
     let (help_text, cursor_x) = help_line(app, old_kinds.len());
     f.render_widget(Paragraph::new(help_text).style(theme::dim_style()), help);
     // Show the terminal cursor while typing a prompt, so there is a caret.
@@ -340,6 +345,62 @@ fn draw_search(
     }
 }
 
+/// The `gd`/`gr` result list, centred over the panes.
+fn draw_locations(f: &mut Frame, app: &App) {
+    let Some(list) = &app.locations else {
+        return;
+    };
+    let area = f.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let w = (area.width.saturating_mul(4) / 5).max(20).min(area.width);
+    let h = (area.height.saturating_mul(3) / 5).max(5).min(area.height);
+    let rect = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    let title = format!(" {}  ({} matches) ", list.title, list.items.len());
+    let block = Block::bordered()
+        .title(title)
+        .border_style(theme::dim_style());
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+
+    let visible = inner.height as usize;
+    if visible == 0 {
+        return;
+    }
+    let offset = list.selected.saturating_sub(visible.saturating_sub(1));
+    let lines: Vec<Line> = list
+        .items
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(index, loc)| {
+            let style = if index == list.selected {
+                theme::active_style().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(
+                format!(
+                    " {}:{}  {}",
+                    app.location_label(&loc.path),
+                    loc.line + 1,
+                    loc.text.trim()
+                ),
+                style,
+            ))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The full-screen help page (`?`).
 fn draw_help(f: &mut Frame, app: &App) {
     let [body, footer] =
@@ -375,6 +436,12 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
     // which-key: while a prefix is pending, show just that prefix's options.
     if !app.key_hint.is_empty() {
         return (format!(" {}", app.key_hint), None);
+    }
+    if app.locations_active() {
+        return (
+            " symbol results    j/k move    Enter open    Esc close".to_string(),
+            None,
+        );
     }
     let path = match app.pair.as_ref() {
         Some((old, new)) => format!("{} → {}", old.display(), new.display()),
@@ -545,6 +612,31 @@ mod tests {
         let top: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(top.contains("old  old.txt"), "header: {top:?}");
         assert!(top.contains("new  new.txt"), "header: {top:?}");
+    }
+
+    #[test]
+    fn location_list_draws_over_the_panes() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.show_files = false;
+        app.locations = Some(crate::app::LocationList {
+            title: "References `x`".into(),
+            items: vec![crate::symbol::Location {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                line: 3,
+                byte_col: 0,
+                text: "    x();".into(),
+            }],
+            selected: 0,
+        });
+        let mut term = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let text: String = (0..16)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .map(|(x, y)| term.backend().buffer()[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("References `x`"));
+        assert!(text.contains("src/lib.rs:4"));
+        assert!(text.contains("Enter open"));
     }
 
     #[test]
