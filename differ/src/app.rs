@@ -2243,8 +2243,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let old_path = dir.join("old.txt");
-        let new_path = dir.join("new.txt");
+        let old_path = dir.join("old.rs");
+        let new_path = dir.join("new.rs");
         let other_path = dir.join("other.rs");
         std::fs::write(&old_path, "fn caller() {\n}\n").unwrap();
         std::fs::write(&new_path, "fn caller() {\n    helper();\n}\n").unwrap();

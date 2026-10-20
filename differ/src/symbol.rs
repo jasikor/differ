@@ -1,12 +1,16 @@
 //! Naive symbol lookup: ripgrep-backed definitions and references.
 //!
-//! This deliberately stays language-agnostic. Definitions are recognised by
-//! common declaration keywords (plus a C/Go/JS-style `name(...) {` shape), and
-//! references are word-boundary matches. It is not a replacement for an LSP;
-//! it is a fast first pass that works without a server.
+//! ripgrep finds the candidates. Rust files are then checked against a
+//! tree-sitter syntax tree, so comments and strings are skipped and enum
+//! variants, fields, aliases and raw identifiers work. Other languages fall
+//! back to declaration keywords (plus a C/Go/JS-style `name(...) {` shape). It
+//! is not a replacement for an LSP; it is a fast first pass without a server.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use tree_sitter::{Node, Parser, Tree};
 
 /// Keep the result list bounded even for very common words.
 const MAX_RESULTS: usize = 300;
@@ -48,14 +52,37 @@ pub struct Location {
 }
 
 /// Search `root` for `word`, returning definitions or every reference.
+///
+/// ripgrep finds the candidates; Rust files are then checked against a
+/// tree-sitter syntax tree so comments, strings, enum variants and fields are
+/// classified correctly.
 pub fn find(root: &Path, word: &str, kind: SearchKind) -> Result<Vec<Location>, String> {
     if word.is_empty() {
         return Ok(Vec::new());
     }
-    let mut out: Vec<Location> = run_ripgrep(root, word)?
-        .into_iter()
-        .filter(|loc| kind == SearchKind::References || is_definition(&loc.text, word))
-        .collect();
+    let mut by_file: BTreeMap<PathBuf, Vec<Location>> = BTreeMap::new();
+    for loc in run_ripgrep(root, word)? {
+        by_file.entry(loc.path.clone()).or_default().push(loc);
+    }
+
+    let mut parser = rust_parser();
+    let mut out = Vec::new();
+    for (path, hits) in by_file {
+        let rust = path.extension().and_then(|ext| ext.to_str()) == Some("rs");
+        if rust {
+            if let Some(kept) = rust_hits(&mut parser, &path, &hits, word, kind) {
+                out.extend(kept);
+                continue;
+            }
+        }
+        // Non-Rust files (and Rust files that could not be parsed) keep the
+        // line-level heuristic.
+        out.extend(
+            hits.into_iter()
+                .filter(|loc| kind == SearchKind::References || is_definition(&loc.text, word)),
+        );
+    }
+
     out.sort_by(|a, b| {
         a.path
             .cmp(&b.path)
@@ -65,6 +92,132 @@ pub fn find(root: &Path, word: &str, kind: SearchKind) -> Result<Vec<Location>, 
     out.dedup();
     out.truncate(MAX_RESULTS);
     Ok(out)
+}
+
+fn rust_parser() -> Option<Parser> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .ok()?;
+    Some(parser)
+}
+
+fn rust_hits(
+    parser: &mut Option<Parser>,
+    path: &Path,
+    hits: &[Location],
+    word: &str,
+    kind: SearchKind,
+) -> Option<Vec<Location>> {
+    let parser = parser.as_mut()?;
+    let source = std::fs::read_to_string(path).ok()?;
+    let tree = parser.parse(&source, None)?;
+    Some(
+        hits.iter()
+            .filter(|loc| keep_rust_hit(&tree, &source, loc, word, kind))
+            .cloned()
+            .collect(),
+    )
+}
+
+fn keep_rust_hit(tree: &Tree, source: &str, loc: &Location, word: &str, kind: SearchKind) -> bool {
+    let Some(offset) = absolute_offset(source, loc.line, loc.byte_col) else {
+        return false;
+    };
+    let end = (offset + word.len()).min(source.len());
+    let Some(node) = tree.root_node().descendant_for_byte_range(offset, end) else {
+        return false;
+    };
+    if !is_name_node(node) || !node_text_matches(node, source, word) {
+        return false;
+    }
+    kind == SearchKind::References || is_definition_node(node)
+}
+
+fn is_name_node(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "field_identifier" | "shorthand_field_identifier"
+    )
+}
+
+fn node_text_matches(node: Node, source: &str, word: &str) -> bool {
+    let Some(text) = source.get(node.byte_range()) else {
+        return false;
+    };
+    text == word || text.strip_prefix("r#") == Some(word)
+}
+
+fn absolute_offset(source: &str, line: usize, byte_col: usize) -> Option<usize> {
+    let mut offset = 0;
+    for (index, text) in source.split_inclusive('\n').enumerate() {
+        if index == line {
+            let line = text.trim_end_matches('\n').trim_end_matches('\r');
+            return Some(offset + byte_col.min(line.len()));
+        }
+        offset += text.len();
+    }
+    None
+}
+
+/// Node kinds whose `name` field declares the symbol.
+const NAME_DEFINITIONS: &[&str] = &[
+    "function_item",
+    "function_signature_item",
+    "struct_item",
+    "enum_item",
+    "union_item",
+    "trait_item",
+    "type_item",
+    "associated_type",
+    "const_item",
+    "static_item",
+    "mod_item",
+    "macro_definition",
+    "enum_variant",
+    "field_declaration",
+    "type_parameter",
+    "const_parameter",
+];
+
+/// Node kinds whose `pattern` field introduces bindings.
+const PATTERN_DEFINITIONS: &[&str] = &[
+    "let_declaration",
+    "let_condition",
+    "parameter",
+    "for_expression",
+    "match_arm",
+];
+
+fn is_definition_node(node: Node) -> bool {
+    let mut current = Some(node);
+    while let Some(ancestor) = current {
+        if NAME_DEFINITIONS.contains(&ancestor.kind()) {
+            if let Some(name) = ancestor.child_by_field_name("name") {
+                if name.id() == node.id() {
+                    return true;
+                }
+            }
+        }
+        if PATTERN_DEFINITIONS.contains(&ancestor.kind()) {
+            if let Some(pattern) = ancestor.child_by_field_name("pattern") {
+                // Only a plain identifier pattern is a binding. A range check
+                // would also match the variant name in `Some(x)`.
+                if pattern.id() == node.id() {
+                    return true;
+                }
+            }
+        }
+        if ancestor.kind() == "use_as_clause" {
+            if let Some(alias) = ancestor.child_by_field_name("alias") {
+                if alias.id() == node.id() {
+                    return true;
+                }
+            }
+        }
+        current = ancestor.parent();
+    }
+    false
 }
 
 fn run_ripgrep(root: &Path, word: &str) -> Result<Vec<Location>, String> {
@@ -267,6 +420,80 @@ mod tests {
                 "{line:?} should not define {word}"
             );
         }
+    }
+
+    fn rust_hit_at(source: &str, word: &str, kind: SearchKind) -> bool {
+        let mut parser = rust_parser().expect("Rust parser");
+        let tree = parser.parse(source, None).expect("syntax tree");
+        let offset = source.find(word).expect("word in source");
+        let line = source[..offset].matches('\n').count();
+        let line_start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let text = source.lines().nth(line).unwrap_or("").to_string();
+        let loc = Location {
+            path: PathBuf::from("test.rs"),
+            line,
+            byte_col: offset - line_start,
+            text,
+        };
+        keep_rust_hit(&tree, source, &loc, word, kind)
+    }
+
+    #[test]
+    fn rust_tree_recognises_variants_fields_aliases_and_raw_idents() {
+        let defs = [
+            ("enum E { Variant }\n", "Variant"),
+            ("struct S { field: u32 }\n", "field"),
+            ("use foo::bar as Alias;\n", "Alias"),
+            ("fn r#type() {}\n", "type"),
+            ("fn f<T>(x: T) {}\n", "T"),
+            ("fn f(x: u32) {}\n", "x"),
+            ("fn f() { let value = 1; }\n", "value"),
+            ("trait T { fn method(&self); }\n", "method"),
+        ];
+        for (source, word) in defs {
+            assert!(
+                rust_hit_at(source, word, SearchKind::Definition),
+                "{word} should be a definition in {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_tree_ignores_comments_and_strings() {
+        let ignored = [
+            ("// fn fake() {}\n", "fake"),
+            ("let s = \"fn fake() {}\";\n", "fake"),
+            ("/// struct Fake;\n", "Fake"),
+        ];
+        for (source, word) in ignored {
+            assert!(
+                !rust_hit_at(source, word, SearchKind::Definition),
+                "{word} should not be a definition in {source:?}"
+            );
+            assert!(
+                !rust_hit_at(source, word, SearchKind::References),
+                "{word} should not be a reference in {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_tree_keeps_real_references() {
+        assert!(rust_hit_at(
+            "fn f() { let _ = E::Variant; }\n",
+            "Variant",
+            SearchKind::References
+        ));
+        assert!(rust_hit_at(
+            "fn f() { let _ = object.field; }\n",
+            "field",
+            SearchKind::References
+        ));
+        assert!(rust_hit_at(
+            "fn f() { println!(\"{}\", helper()); }\n",
+            "helper",
+            SearchKind::References
+        ));
     }
 
     #[test]

@@ -27,7 +27,8 @@ headers, and `R` re-reads both files.
 **Keys:** `Ctrl-h`/`Ctrl-l` cycle panels (files / old / new) · `h`/`j`/`k`/`l`
 (or arrows) move · `w`/`b`/`e` by word, `W`/`B`/`E` by WORD · `0`/`^`/`$`
 line start / first non-blank / end · `]c`/`[c` (or `Ctrl-n`/`Ctrl-p`)
-next/prev change · `gd`/`gr` go to definition / list references (ripgrep) ·
+next/prev change · `gd`/`gr` go to definition / list references (ripgrep,
+tree-sitter for Rust) ·
 `Ctrl-o` back after a symbol jump · `s` + a
 pattern to jump to a visible match (flash-style) · `/` search (literal,
 smartcase) with `n`/`N` to repeat · `Space n`/`Space p` next/previous file from
