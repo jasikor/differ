@@ -55,34 +55,68 @@ fn similarity(a: &str, b: &str) -> f64 {
 fn flush_rows(dels: &mut Vec<String>, ins: &mut Vec<String>, rows: &mut Vec<DiffRow>) {
     // Pair removed and added lines by similarity (not position), so that a hunk
     // with unequal counts still matches the lines that actually correspond.
-    let mut matched: Vec<Option<usize>> = vec![None; dels.len()];
-    let mut used = vec![false; ins.len()];
-    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
-    for (i, d) in dels.iter().enumerate() {
-        for (j, n) in ins.iter().enumerate() {
-            candidates.push((similarity(d, n), i, j));
-        }
-    }
-    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    for (_, i, j) in candidates {
-        if matched[i].is_none() && !used[j] {
-            matched[i] = Some(j);
-            used[j] = true;
-        }
-    }
+    let matched = match_lines(dels, ins);
+    // Emit both sides in their own source order. A match must therefore come
+    // after every earlier unmatched line on either side; otherwise the pane
+    // would reorder the file, and its line numbers would no longer line up.
+    let mut next_ins = 0;
     for (i, line) in dels.iter().enumerate() {
         match matched[i] {
-            Some(j) => rows.push(DiffRow::Chg(line.clone(), ins[j].clone())),
+            Some(j) => {
+                while next_ins < j {
+                    rows.push(DiffRow::Ins(ins[next_ins].clone()));
+                    next_ins += 1;
+                }
+                rows.push(DiffRow::Chg(line.clone(), ins[j].clone()));
+                next_ins = j + 1;
+            }
             None => rows.push(DiffRow::Del(line.clone())),
         }
     }
-    for (j, line) in ins.iter().enumerate() {
-        if !used[j] {
-            rows.push(DiffRow::Ins(line.clone()));
-        }
+    for line in ins.iter().skip(next_ins) {
+        rows.push(DiffRow::Ins(line.clone()));
     }
     dels.clear();
     ins.clear();
+}
+
+/// Match deleted lines to inserted ones by similarity, without letting the
+/// pairs cross: if deleted `i` pairs with inserted `j`, every earlier deleted
+/// line pairs with an earlier inserted line. Returns the inserted line paired
+/// with each deleted line (if any).
+fn match_lines(dels: &[String], ins: &[String]) -> Vec<Option<usize>> {
+    let (n, m) = (dels.len(), ins.len());
+    let mut sim = vec![vec![0.0; m]; n];
+    for (i, d) in dels.iter().enumerate() {
+        for (j, text) in ins.iter().enumerate() {
+            sim[i][j] = similarity(d, text);
+        }
+    }
+    // `best[i][j]` is the largest similarity total for the first `i` deleted
+    // and first `j` inserted lines. Skipping a line is free, so this is an
+    // order-preserving (non-crossing) maximum-similarity matching.
+    let mut best = vec![vec![0.0; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            let pair = best[i - 1][j - 1] + sim[i - 1][j - 1];
+            best[i][j] = pair.max(best[i - 1][j]).max(best[i][j - 1]);
+        }
+    }
+    let mut matched = vec![None; n];
+    let (mut i, mut j) = (n, m);
+    while i > 0 && j > 0 {
+        let pair = best[i - 1][j - 1] + sim[i - 1][j - 1];
+        if (best[i][j] - pair).abs() < f64::EPSILON {
+            matched[i - 1] = Some(j - 1);
+            i -= 1;
+            j -= 1;
+        } else if best[i][j] == best[i - 1][j] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    matched
 }
 
 /// Intra-line (word/char) segmentation for a changed pair.
@@ -381,5 +415,54 @@ mod tests {
         let (new_of_old, old_of_new) = line_maps(&rows);
         assert_eq!(new_of_old, vec![0, 1, 2]);
         assert_eq!(old_of_new, vec![0, 2, 2]);
+    }
+
+    fn side_lines(rows: &[DiffRow], old_side: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        for row in rows {
+            match row {
+                DiffRow::Ctx(t) => out.push(t.clone()),
+                DiffRow::Chg(o, n) => out.push(if old_side { o.clone() } else { n.clone() }),
+                DiffRow::Del(t) if old_side => out.push(t.clone()),
+                DiffRow::Ins(t) if !old_side => out.push(t.clone()),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn paired_changes_keep_each_side_in_source_order() {
+        let cases = [
+            (
+                "first old line\nsecond old line\n",
+                "brand new line\nfirst new line\nsecond new line\n",
+            ),
+            (
+                "brand old line\nfirst old line\nsecond old line\n",
+                "first new line\nsecond new line\n",
+            ),
+            (
+                "ctx\nfirst old line\nsecond old line\nlast ctx\n",
+                "ctx\nbrand new line\nfirst new line\nlast ctx\n",
+            ),
+        ];
+        for (old, new) in cases {
+            let rows = diff_rows(old, new);
+            assert_eq!(side_lines(&rows, true), old.lines().collect::<Vec<_>>());
+            assert_eq!(side_lines(&rows, false), new.lines().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn an_unmatched_insert_stays_above_the_lines_it_precedes() {
+        let old = "first old line\nsecond old line\n";
+        let new = "brand new line\nfirst new line\nsecond new line\n";
+        let rows = diff_rows(old, new);
+        // The inserted line comes first in the new file, so it must come first
+        // here too, not be pushed after the similarity-paired lines.
+        assert!(matches!(&rows[0], DiffRow::Ins(t) if t == "brand new line"));
+        assert_eq!(new_row(&rows, 0), 0);
+        assert_eq!(new_row(&rows, 2), 2);
     }
 }
