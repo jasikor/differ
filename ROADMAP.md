@@ -159,14 +159,48 @@ signing, config/theming, mouse, multi-repo, history browsing, arbitrary refs.
 ## Architecture
 
 ```
-differ/src/
+differ-core/src/
+  git.rs       shell-out git: status, contents, stage, commit, push
+  model.rs     DiffRow, diff_rows(), intra_line(), hunks()
+  tree.rs      file list ordering
+  symbol.rs    ripgrep + tree-sitter definitions / references
+
+differ/src/    (TUI front end)
   main.rs      entry, terminal setup, event loop
   app.rs       state (repo, files, selection, focus, mode, messages)
-  git.rs       shell-out git: status, contents, stage, commit, push
-  model.rs     DiffRow, diff_rows(), intra_line()
-  view/        panes.rs, gutter.rs, files.rs, theme.rs
-  input.rs     key handling
+  command.rs   commands, decoupled from keys
+  keymap.rs    data-driven, sequence-capable key table
+  view/        panes.rs, gutter.rs, files.rs, ruler.rs, theme.rs
+
+differ-html/src/  (experimental web front end)
+  main.rs      CLI: repo or two files -> one HTML file
+  render.rs    rows + block spans -> HTML
+  style.css    dark theme, panes, hatched counterpart rows
+  rails.js     SVG overlay: rails and connectors, hover spotlight
 ```
+
+## Graphical renderer (experiment)
+
+`differ-html` renders the diff as a self-contained page: HTML rows for the text
+(selection and copy still work) and an SVG overlay, positioned from the laid-out
+row rectangles, for the rails and connectors.
+
+What the character grid forced and a canvas does not:
+
+- **Connector lanes** — curves route straight across the gutter, so busy diffs
+  no longer share a limited number of lanes.
+- **Tabs and wide characters** — the browser lays text out; no manual column
+  arithmetic.
+- **Gap arrows** — a one-sided block ends in a dashed stub and a hollow dot
+  instead of the two-row arrow.
+- **Wrapping** — long lines wrap (row heights are equalised across panes) or
+  clip with `--no-wrap`; no horizontal panning.
+- **Hover** — pointing at a changed row spotlights its rails and dims the rest.
+
+Blocks are grouped by row kind (runs of deleted / inserted / changed rows),
+not by `model::hunks()`, so a rail never spans rows it does not own. A run of
+deleted lines followed by unrelated inserted lines reads as two one-sided
+blocks rather than one misleading link.
 
 ## Technical notes
 
