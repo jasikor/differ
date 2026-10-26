@@ -29,6 +29,16 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT: &str = env!("DIFFER_GIT_HASH");
 const COMMIT_TIME: &str = env!("DIFFER_COMMIT_TIME");
 
+/// The left header's repository label: the worktree directory, then the branch
+/// it has checked out (`differ @ main`). Either part may be missing.
+fn repo_label(repo_name: &str, branch: &str) -> String {
+    match (repo_name.is_empty(), branch.is_empty()) {
+        (true, _) => branch.to_string(),
+        (false, true) => repo_name.to_string(),
+        (false, false) => format!("{repo_name} @ {branch}"),
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     if app.help_open {
         draw_help(f, app);
@@ -152,12 +162,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ),
     };
 
+    // The header names the worktree (its directory) and the branch checked out
+    // in it, so several worktrees of the same repository stay distinguishable.
     let repo_name = app
         .repo
         .as_ref()
         .and_then(|r| r.root().file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let repo_label = repo_label(&repo_name, &app.branch);
     // A revision comparison names itself next to the repo; the worktree view
     // (the default) has nothing extra to say.
     let range = match app.comparison {
@@ -170,7 +183,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .map(|label| format!("  {label}"))
             .unwrap_or_default();
         f.render_widget(
-            Paragraph::new(format!(" {repo_name}{suffix}")).style(files_style),
+            Paragraph::new(format!(" {repo_label}{suffix}")).style(files_style),
             files_head,
         );
         files::draw(
@@ -821,6 +834,24 @@ mod tests {
         let top: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(top.contains("old  old.txt"), "header: {top:?}");
         assert!(top.contains("new  new.txt"), "header: {top:?}");
+    }
+
+    #[test]
+    fn the_repo_label_names_the_worktree_and_branch() {
+        assert_eq!(repo_label("differ", "main"), "differ @ main");
+        assert_eq!(repo_label("differ", ""), "differ");
+        assert_eq!(repo_label("", "main"), "main");
+    }
+
+    #[test]
+    fn the_files_header_names_the_current_branch() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.branch = "feature-x".into();
+        let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let top: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(top.contains("feature-x"), "header: {top:?}");
     }
 
     #[test]

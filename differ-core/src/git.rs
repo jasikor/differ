@@ -275,6 +275,22 @@ impl Repo {
         &self.root
     }
 
+    /// The checked-out branch of this worktree, or the short commit hash when
+    /// `HEAD` is detached. An empty repository reports its unborn branch.
+    pub fn branch(&self) -> String {
+        let branch = self
+            .git(&["symbolic-ref", "--short", "-q", "HEAD"])
+            .ok()
+            .map(|out| out.trim().to_string())
+            .filter(|branch| !branch.is_empty());
+        if let Some(branch) = branch {
+            return branch;
+        }
+        self.git(&["rev-parse", "--short", "HEAD"])
+            .map(|out| out.trim().to_string())
+            .unwrap_or_else(|_| "HEAD".to_string())
+    }
+
     fn git(&self, args: &[&str]) -> Result<String> {
         run(Some(&self.root), args)
     }
@@ -738,6 +754,24 @@ mod tests {
                 files.iter().map(|f| &f.path).collect::<Vec<_>>()
             )
         })
+    }
+
+    #[test]
+    fn branch_names_the_checked_out_branch_or_the_detached_commit() {
+        let sandbox = Sandbox::new("branch");
+        let repo = sandbox.repo();
+        // A repository without commits still has an unborn branch.
+        assert_eq!(repo.branch(), "main");
+
+        sandbox.git(&["checkout", "-q", "-b", "topic"]);
+        assert_eq!(repo.branch(), "topic");
+
+        sandbox.write("file.txt", "one\n");
+        let commit = sandbox.commit("first");
+        sandbox.git(&["checkout", "-q", "--detach"]);
+        let short = sandbox.git(&["rev-parse", "--short", "HEAD"]);
+        assert_eq!(repo.branch(), short.trim());
+        assert_eq!(repo.branch(), &commit[..short.trim().len()]);
     }
 
     #[test]

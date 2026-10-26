@@ -123,6 +123,9 @@ pub struct App {
     pub pair: Option<(PathBuf, PathBuf)>,
     /// What the diff compares: the worktree by default, or revisions.
     pub comparison: git::Comparison,
+    /// The checked-out branch of the current worktree (or short `HEAD` commit),
+    /// refreshed with the rest of the repository state.
+    pub branch: String,
     /// The spec the user typed for `comparison` (empty for the worktree view),
     /// so the prompt can reopen with it.
     pub range_spec: String,
@@ -244,6 +247,7 @@ impl App {
             repo: None,
             pair: None,
             comparison: git::Comparison::Worktree,
+            branch: String::new(),
             range_spec: String::new(),
             range_input: None,
             revisions: Vec::new(),
@@ -293,6 +297,9 @@ impl App {
     /// Re-read the file list and the selected diff. In direct file mode there
     /// is no file list; both files are read again instead.
     pub fn refresh(&mut self) {
+        if let Some(repo) = &self.repo {
+            self.branch = repo.branch();
+        }
         if self.pair.is_some() {
             self.load_diff();
             return;
@@ -2417,6 +2424,7 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         repo: None,
         pair: None,
         comparison: git::Comparison::Worktree,
+        branch: String::new(),
         range_spec: String::new(),
         range_input: None,
         revisions: Vec::new(),
@@ -2474,6 +2482,7 @@ mod tests {
             repo: None,
             pair: None,
             comparison: git::Comparison::Worktree,
+            branch: String::new(),
             range_spec: String::new(),
             range_input: None,
             revisions: Vec::new(),
@@ -3728,6 +3737,25 @@ mod tests {
 
         app.range_key(KeyCode::Esc);
         assert_eq!(app.range_text(), None);
+    }
+
+    #[test]
+    fn loading_a_repository_records_the_current_branch() {
+        let sandbox = Sandbox::new("branch");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+
+        let app = App::new(Some(&sandbox.dir));
+        assert_eq!(app.branch, "main");
+
+        sandbox.git(&["checkout", "-q", "-b", "feature-x"]);
+        let mut app = App::new(Some(&sandbox.dir));
+        assert_eq!(app.branch, "feature-x");
+
+        // A reload picks up a checkout made while differ was running.
+        sandbox.git(&["checkout", "-q", "main"]);
+        app.refresh();
+        assert_eq!(app.branch, "main");
     }
 
     #[test]
