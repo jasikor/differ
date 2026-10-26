@@ -1,0 +1,10 @@
+[package]
+name = "differ-html"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental graphical (HTML) front end for differ"
+license = "GPL-3.0-only"
+repository = "https://github.com/jasikor/differ"
+
+[dependencies]
+differ-core = { path = "../differ-core" }

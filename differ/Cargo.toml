@@ -1,6 +1,6 @@
 [package]
 name = "differ"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A side-by-side terminal diff viewer with connecting rails"
 license = "GPL-3.0-only"
@@ -8,6 +8,4 @@ repository = "https://github.com/jasikor/differ"
 
 [dependencies]
 ratatui = "0.30"
-similar = "2"
-tree-sitter = "0.27.1"
-tree-sitter-rust = "0.24.2"
+differ-core = { path = "../differ-core" }

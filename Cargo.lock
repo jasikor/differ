@@ -293,12 +293,26 @@ dependencies = [
 
 [[package]]
 name = "differ"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "differ-core",
  "ratatui",
+]
+
+[[package]]
+name = "differ-core"
+version = "0.1.0"
+dependencies = [
  "similar",
  "tree-sitter",
  "tree-sitter-rust",
+]
+
+[[package]]
+name = "differ-html"
+version = "0.1.0"
+dependencies = [
+ "differ-core",
 ]
 
 [[package]]

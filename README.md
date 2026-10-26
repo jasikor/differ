@@ -39,6 +39,22 @@ scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused pane ·
 `R` reload · `q` quit · `Esc` cancels a pending key · `?` full-screen key
 help (press a prefix like `Space` to see its options in the status line).
 
+## Graphical experiment
+
+`differ-html` renders the same diff as a single self-contained web page. The
+rails become SVG curves across the gutter instead of box-drawing characters,
+hovering a changed row spotlights its rails, and long lines wrap (or are
+clipped with `--no-wrap`). Nothing is tied to a character grid, so connectors
+no longer compete for lanes.
+
+```sh
+cargo run -p differ-html -- --repo . -o /tmp/differ.html --open
+cargo run -p differ-html -- old.txt new.txt -o /tmp/differ.html --open
+```
+
+The data layer — diff model, git access, symbol lookup, file ordering — lives
+in the `differ-core` crate and is shared by both front ends.
+
 ## Versioning
 
 Every merged user-facing feature bumps the minor version (`0.2.0`, `0.3.0`, …);
