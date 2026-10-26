@@ -48,7 +48,10 @@ help (press a prefix like `Space` to see its options in the status line).
 committed. The screen has three parts: the left column keeps the changed files
 on top and the versions below, and the two diff panes take the rest. `Ctrl-h`/`Ctrl-l` move between the
 columns, `Ctrl-j`/`Ctrl-k` between the changed files and the versions, and
-`Space e` hides or shows the whole left column.
+`Space e` hides or shows the whole left column. The changed-files header names
+the worktree's directory and its checked-out branch (`differ @ main`, or the
+short hash when `HEAD` is detached), so parallel worktrees of the same
+repository stay distinguishable.
 
 The versions list is newest first across all branches, one row per commit, with
 the branch graph in front (lanes for parallel branches and merges — connector
