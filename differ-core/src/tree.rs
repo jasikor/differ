@@ -4,7 +4,7 @@
 //! plain file index (`selected`) and `file_row` maps it to the row it occupies,
 //! so movement stays `selected ± 1` and never lands on a directory.
 
-use crate::git::FileEntry;
+use crate::git::{FileEntry, Status};
 
 /// One line in the sidebar.
 pub enum Row {
@@ -15,8 +15,7 @@ pub enum Row {
     File {
         name: String,
         depth: usize,
-        staged: Option<char>,
-        unstaged: Option<char>,
+        status: Status,
     },
 }
 
@@ -70,8 +69,7 @@ pub fn build(files: &[FileEntry]) -> (Vec<Row>, Vec<usize>) {
         rows.push(Row::File {
             name: name.to_string(),
             depth: dirs.len(),
-            staged: entry.staged,
-            unstaged: entry.unstaged,
+            status: entry.status,
         });
         prev = dirs.to_vec();
     }
@@ -83,11 +81,7 @@ mod tests {
     use super::*;
 
     fn f(path: &str) -> FileEntry {
-        FileEntry {
-            path: path.into(),
-            staged: None,
-            unstaged: Some('M'),
-        }
+        FileEntry::worktree(path, None, Some('M'))
     }
 
     #[test]

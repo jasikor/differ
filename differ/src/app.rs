@@ -13,33 +13,22 @@ use crate::tree;
 /// Context lines kept above a jumped-to hunk.
 const HUNK_CONTEXT: usize = 3;
 
-/// Which region receives movement keys.
+/// How many revisions the picker loads; enough to reach a recent tag without
+/// reading a huge history.
+const REVISION_LIMIT: usize = 200;
+
+/// Which region receives movement keys. The left panel stacks the changed
+/// files above the versions, so the two are separate focus targets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Files,
+    Revisions,
     Old,
     New,
 }
 
-impl Focus {
-    /// The region one step to the right (stops at the rightmost pane).
-    fn right(self) -> Self {
-        match self {
-            Focus::Files => Focus::Old,
-            Focus::Old => Focus::New,
-            Focus::New => Focus::New,
-        }
-    }
-
-    /// The region one step to the left (stops at the file list).
-    fn left(self) -> Self {
-        match self {
-            Focus::Files => Focus::Files,
-            Focus::Old => Focus::Files,
-            Focus::New => Focus::Old,
-        }
-    }
-}
+// (movement is handled by the app: horizontal across columns, vertical
+// between the left panel's two sections)
 
 /// Remembered view position for a file, so reopening it keeps its place.
 #[derive(Clone, Copy)]
@@ -61,7 +50,7 @@ struct ReturnPoint {
     new_top: usize,
     focus: Focus,
     zoom: Option<Focus>,
-    show_files: bool,
+    show_left: bool,
     last_diff: Focus,
 }
 
@@ -132,6 +121,19 @@ pub struct App {
     /// Two files from the command line, compared directly (no git). When set,
     /// there is no file list and `files` stays empty.
     pub pair: Option<(PathBuf, PathBuf)>,
+    /// What the diff compares: the worktree by default, or revisions.
+    pub comparison: git::Comparison,
+    /// The spec the user typed for `comparison` (empty for the worktree view),
+    /// so the prompt can reopen with it.
+    pub range_spec: String,
+    /// The revision prompt's text while it is open.
+    range_input: Option<String>,
+    /// Versions to choose from, newest first, with the branch-graph art; and
+    /// the row under the cursor (always a commit, never a graph-only link).
+    pub revisions: Vec<git::VersionRow>,
+    pub revision_selected: usize,
+    /// The base side when comparing two commits (an index into `revisions`).
+    pub revision_marked: Option<usize>,
     pub files: Vec<git::FileEntry>,
     /// Sidebar rows (directories + files) built from `files`, and the row each
     /// file occupies so movement can skip the directory labels.
@@ -159,9 +161,13 @@ pub struct App {
     /// When set, that diff pane fills the width and the other pane, gutter and
     /// its ruler are hidden.
     pub zoom: Option<Focus>,
-    /// Whether the file (git) panel is shown. Hidden, the diff panes take the
-    /// full width and the panel drops out of the `Ctrl-h`/`Ctrl-l` cycle.
-    pub show_files: bool,
+    /// The left section that last had focus, so moving left from a diff pane
+    /// returns to it rather than always to the file list.
+    last_left: Focus,
+    /// Whether the left panel (changed files above versions) is shown. Hidden,
+    /// the diff panes take the full width and both sections drop out of the
+    /// `Ctrl-h`/`Ctrl-l` cycle.
+    pub show_left: bool,
     /// The most recent diff pane focused, returned to when the panel is hidden.
     last_diff: Focus,
     /// Pane body height, refreshed by the view each frame.
@@ -213,11 +219,23 @@ impl App {
         let mut app = App::blank();
         app.pair = Some((old.to_path_buf(), new.to_path_buf()));
         // There is one comparison, so the file list has nothing to show.
-        app.show_files = false;
+        app.show_left = false;
         app.focus = Focus::Old;
         app.last_diff = Focus::Old;
         app.load_diff();
         app
+    }
+
+    /// Browse a repository at a revision range (`A..B`, `A...B` or `A`).
+    /// Fails before any terminal work if the repo or the spec is unusable.
+    pub fn with_range(start: Option<&Path>, spec: &str) -> Result<Self, String> {
+        let repo = Repo::discover_in(start).map_err(|e| format!("not a git repository: {e}"))?;
+        let mut app = App::blank();
+        app.comparison = repo.comparison(spec).map_err(|e| e.to_string())?;
+        app.range_spec = spec.trim().to_string();
+        app.repo = Some(repo);
+        app.refresh();
+        Ok(app)
     }
 
     /// All fields at their defaults, before any source is loaded.
@@ -225,6 +243,12 @@ impl App {
         App {
             repo: None,
             pair: None,
+            comparison: git::Comparison::Worktree,
+            range_spec: String::new(),
+            range_input: None,
+            revisions: Vec::new(),
+            revision_selected: 0,
+            revision_marked: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -241,7 +265,8 @@ impl App {
             new_left: 0,
             focus: Focus::Files,
             zoom: None,
-            show_files: true,
+            last_left: Focus::Files,
+            show_left: true,
             last_diff: Focus::Old,
             viewport: 1,
             old_code_w: 1,
@@ -272,8 +297,25 @@ impl App {
             self.load_diff();
             return;
         }
-        let Some(repo) = &self.repo else { return };
-        match repo.status() {
+        // `load_diff` clears the message, so a file-list error has to be put
+        // back after it rather than being reported before.
+        let error = self.reload_files().err();
+        // An empty repository makes `git log` fail; that is not worth a message
+        // when the rest of the repo works, so the versions error is dropped.
+        let _ = self.reload_revisions();
+        self.load_diff();
+        if let Some(error) = error {
+            self.message = error;
+        }
+    }
+
+    /// Re-read the file list for the active comparison, keeping the selection
+    /// inside it.
+    fn reload_files(&mut self) -> Result<(), String> {
+        let Some(repo) = &self.repo else {
+            return Ok(());
+        };
+        match repo.changes(&self.comparison) {
             Ok(mut files) => {
                 // Sidebar order: subdirectories before files, recursively.
                 tree::order(&mut files);
@@ -282,16 +324,253 @@ impl App {
                     self.selected = self.files.len().saturating_sub(1);
                 }
             }
-            Err(e) => self.message = format!("status: {e}"),
+            Err(e) => {
+                self.rebuild_tree();
+                return Err(e.to_string());
+            }
         }
         self.rebuild_tree();
-        self.load_diff();
+        Ok(())
     }
 
     fn rebuild_tree(&mut self) {
         let (rows, file_row) = tree::build(&self.files);
         self.tree = rows;
         self.file_row = file_row;
+    }
+
+    // ---- comparing revisions ----
+
+    /// Open the revision prompt, prefilled with the active range.
+    pub fn start_range_prompt(&mut self) {
+        self.message.clear();
+        self.range_input = Some(self.range_spec.clone());
+    }
+
+    /// The revision prompt's text while it is open.
+    pub fn range_text(&self) -> Option<&str> {
+        self.range_input.as_deref()
+    }
+
+    /// Feed a key to the revision prompt: `Enter` applies the spec, `Esc`
+    /// cancels, and anything that is not text is ignored.
+    pub fn range_key(&mut self, code: KeyCode) {
+        let Some(mut text) = self.range_input.take() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => self.apply_range(&text),
+            KeyCode::Backspace => {
+                text.pop();
+                self.range_input = Some(text);
+            }
+            KeyCode::Char(c) => {
+                text.push(c);
+                self.range_input = Some(text);
+            }
+            _ => self.range_input = Some(text),
+        }
+    }
+
+    /// Apply a revision spec; empty returns to the worktree view. A spec that
+    /// does not resolve leaves the prompt open and changes nothing.
+    fn apply_range(&mut self, spec: &str) {
+        let Some(repo) = self.repo.clone() else {
+            self.message = "no repository to compare revisions in".to_string();
+            return;
+        };
+        match repo.comparison(spec) {
+            Ok(comparison) => self.set_comparison(comparison, spec.trim().to_string()),
+            Err(e) => {
+                self.message = e.to_string();
+                self.range_input = Some(spec.to_string());
+            }
+        }
+    }
+
+    /// Switch the comparison and reload everything that depends on it. The
+    /// file list and the saved view positions belong to the old comparison, so
+    /// they start over.
+    fn set_comparison(&mut self, comparison: git::Comparison, spec: String) {
+        self.comparison = comparison;
+        self.range_spec = spec;
+        self.pair = None;
+        self.show_left = true;
+        self.selected = 0;
+        self.file_scroll = 0;
+        self.view_state.clear();
+        self.message.clear();
+        self.refresh();
+        if self.message.is_empty() && self.files.is_empty() {
+            self.message = format!("no changes in {}", self.comparison.label());
+        }
+    }
+
+    // ---- versions ----
+
+    /// Focus the versions list, showing the left panel if it is hidden.
+    pub fn focus_revisions(&mut self) {
+        self.message.clear();
+        if self.repo.is_none() {
+            self.message = "no repository to compare revisions in".to_string();
+            return;
+        }
+        self.show_left = true;
+        // A standalone file view (a symbol jump into an unchanged file) has no
+        // changes panel; return to the repository view for it.
+        if self.pair.take().is_some() {
+            self.refresh();
+        }
+        self.set_focus(Focus::Revisions);
+        if self.revisions.is_empty() {
+            let _ = self.reload_revisions();
+        }
+    }
+
+    /// The commits of the active comparison, where a missing `to` is the
+    /// working tree.
+    fn comparison_ends(&self) -> (Option<&str>, Option<&str>) {
+        match &self.comparison {
+            git::Comparison::Worktree => (None, None),
+            git::Comparison::Revs { from, to } => (Some(&from.commit), Some(&to.commit)),
+            git::Comparison::RevToWorktree { from } => (Some(&from.commit), None),
+        }
+    }
+
+    /// Re-read the versions list, keeping the highlight on an existing row.
+    fn reload_revisions(&mut self) -> Result<(), String> {
+        let Some(repo) = &self.repo else {
+            return Ok(());
+        };
+        self.revisions = repo.revisions(REVISION_LIMIT).map_err(|e| e.to_string())?;
+        self.revision_selected = self
+            .revision_selected
+            .min(self.revisions.len().saturating_sub(1));
+        self.sync_revision_selection();
+        Ok(())
+    }
+
+    /// Point the highlight (and the base mark) at the active comparison's ends
+    /// when they are in the list.
+    fn sync_revision_selection(&mut self) {
+        let (selected, marked) = {
+            let (from, to) = self.comparison_ends();
+            let find = |commit: Option<&str>| commit.and_then(|commit| self.commit_row(commit));
+            // A two-commit comparison keeps its base marked; a revision
+            // compared with the working tree is the selection, not the base.
+            let marked = if to.is_some() { find(from) } else { None };
+            (find(to).or_else(|| find(from)), marked)
+        };
+        if let Some(index) = selected {
+            self.revision_selected = index;
+        }
+        self.revision_marked = marked;
+        self.revision_selected = self
+            .revision_selected
+            .min(self.revisions.len().saturating_sub(1));
+    }
+
+    /// Compare the highlighted version: from the marked base when one is set,
+    /// otherwise against the working tree.
+    pub fn apply_revision(&mut self) {
+        if self.focus != Focus::Revisions {
+            return;
+        }
+        let Some(selected) = self.selected_revision().cloned() else {
+            return;
+        };
+        let base = self.marked_revision().cloned();
+        let comparison = match (base, selected) {
+            (Some(base), selected) if base.commit != selected.commit => git::Comparison::Revs {
+                from: rev_of(&base),
+                to: rev_of(&selected),
+            },
+            (_, selected) => git::Comparison::RevToWorktree {
+                from: rev_of(&selected),
+            },
+        };
+        let spec = match &comparison {
+            git::Comparison::Revs { from, to } => format!("{}..{}", from.label, to.label),
+            git::Comparison::RevToWorktree { from } => from.label.clone(),
+            git::Comparison::Worktree => String::new(),
+        };
+        self.set_comparison(comparison, spec);
+        // The point of picking a version is reading it, so leave a left-panel
+        // zoom and land on a pane zoom is not hiding.
+        if matches!(self.zoom, Some(Focus::Files) | Some(Focus::Revisions)) {
+            self.zoom = None;
+        }
+        let pane = match self.zoom {
+            Some(Focus::New) => Focus::New,
+            _ => Focus::Old,
+        };
+        self.set_focus(pane);
+    }
+
+    /// Mark (or unmark) the highlighted version as the base of a two-commit
+    /// comparison.
+    pub fn mark_revision(&mut self) {
+        if self.focus != Focus::Revisions || self.selected_revision().is_none() {
+            return;
+        }
+        self.revision_marked = match self.revision_marked {
+            Some(marked) if marked == self.revision_selected => None,
+            _ => Some(self.revision_selected),
+        };
+    }
+
+    /// The commit the cursor is on.
+    fn selected_revision(&self) -> Option<&git::Revision> {
+        self.revisions.get(self.revision_selected)?.revision()
+    }
+
+    /// The marked base commit, if any.
+    fn marked_revision(&self) -> Option<&git::Revision> {
+        self.revisions.get(self.revision_marked?)?.revision()
+    }
+
+    /// The row showing `commit`, if it is in the list.
+    fn commit_row(&self, commit: &str) -> Option<usize> {
+        self.revisions
+            .iter()
+            .position(|row| row.revision().is_some_and(|rev| rev.commit == commit))
+    }
+
+    fn first_commit(&self) -> usize {
+        self.revisions
+            .iter()
+            .position(|row| row.revision().is_some())
+            .unwrap_or(0)
+    }
+
+    fn last_commit(&self) -> usize {
+        self.revisions
+            .iter()
+            .rposition(|row| row.revision().is_some())
+            .unwrap_or(0)
+    }
+
+    /// Move the versions cursor, stepping over graph-only link rows.
+    fn move_revision(&mut self, delta: i32) {
+        if delta == 0 || self.revisions.is_empty() {
+            return;
+        }
+        let last = self.revisions.len() - 1;
+        let target = (self.revision_selected as i64 + delta as i64).clamp(0, last as i64) as usize;
+        if self.revisions[target].revision().is_some() {
+            self.revision_selected = target;
+            return;
+        }
+        let step: isize = if delta > 0 { 1 } else { -1 };
+        let mut at = target as isize;
+        while at >= 0 && (at as usize) <= last {
+            if self.revisions[at as usize].revision().is_some() {
+                self.revision_selected = at as usize;
+                return;
+            }
+            at += step;
+        }
     }
 
     pub fn selected_path(&self) -> Option<&str> {
@@ -332,6 +611,7 @@ impl App {
     fn step(&mut self, n: isize) {
         match self.focus {
             Focus::Files => self.move_selection(n as i32),
+            Focus::Revisions => self.move_revision(n as i32),
             Focus::Old => {
                 let c = clamp_line(self.old_cursor as isize + n, self.old_total());
                 if c == self.old_cursor && n > 0 {
@@ -391,6 +671,7 @@ impl App {
                 self.file_scroll = 0;
                 self.load_diff();
             }
+            Focus::Revisions => self.revision_selected = self.first_commit(),
             Focus::Old => {
                 self.old_cursor = 0;
                 self.sync_from_old();
@@ -412,6 +693,9 @@ impl App {
                 self.ensure_file_visible();
                 self.load_diff();
             }
+            Focus::Revisions => {
+                self.revision_selected = self.last_commit();
+            }
             Focus::Old => {
                 self.old_cursor = self.old_total().saturating_sub(1);
                 self.sync_from_old();
@@ -427,16 +711,6 @@ impl App {
         }
     }
 
-    pub fn focus_next(&mut self) {
-        self.focus = self.neighbour(true);
-        self.remember_diff();
-    }
-
-    pub fn focus_prev(&mut self) {
-        self.focus = self.neighbour(false);
-        self.remember_diff();
-    }
-
     /// Track the last diff pane focused, so hiding the file panel can return
     /// there instead of landing on nothing.
     fn remember_diff(&mut self) {
@@ -445,71 +719,119 @@ impl App {
         }
     }
 
-    /// The pane that zoom (Ctrl-z) is currently hiding, if any.
-    fn hidden_pane(&self) -> Option<Focus> {
+    /// Whether zoom (Ctrl-z) hides this region. Zoom keeps one region (a diff
+    /// pane, or the whole left panel) and drops the rest.
+    fn zoom_hides(&self, f: Focus) -> bool {
         match self.zoom {
-            Some(Focus::Old) => Some(Focus::New),
-            Some(Focus::New) => Some(Focus::Old),
-            _ => None,
+            Some(zoomed) if zoomed == f => false,
+            Some(Focus::Old) => f == Focus::New,
+            Some(Focus::New) => f == Focus::Old,
+            Some(Focus::Files | Focus::Revisions) => matches!(f, Focus::Old | Focus::New),
+            None => false,
         }
     }
 
-    /// Whether a region is currently on screen: the file panel unless toggled
-    /// off, and neither a diff pane that zoom hides.
+    /// Whether a region is currently on screen: the left panel unless toggled
+    /// off, and nothing zoom hides.
     fn visible(&self, f: Focus) -> bool {
         match f {
-            Focus::Files => self.show_files && self.pair.is_none(),
-            _ => Some(f) != self.hidden_pane(),
+            Focus::Files | Focus::Revisions => self.show_left && self.pair.is_none(),
+            _ => !self.zoom_hides(f),
         }
     }
 
-    /// The region one step left/right within the visible panels, skipping any
-    /// region currently hidden (the file panel when toggled off, or a diff pane
-    /// that zoom hides). Movement still stops at the ends (it never wraps), so
-    /// when the only step lands on a hidden region with no visible panel past
-    /// it, the focus stays put.
-    ///
-    /// Hiding is deliberately left untouched here: focus only moves between
-    /// regions that are actually on screen, so the zoom target and panel state
-    /// stay valid.
-    fn neighbour(&self, right: bool) -> Focus {
-        let step = |f: Focus| if right { f.right() } else { f.left() };
-        let mut next = step(self.focus);
-        while !self.visible(next) {
-            let further = step(next);
-            if further == next {
-                return self.focus;
+    /// Focus the last region to the left, skipping anything off screen (the
+    /// hidden left panel, or a diff pane zoom hides). Focus never wraps, and
+    /// vertical movement is separate: `Ctrl-j`/`Ctrl-k` swap the left panel's
+    /// two sections.
+    pub fn focus_left(&mut self) {
+        self.focus_horizontal(false);
+    }
+
+    pub fn focus_right(&mut self) {
+        self.focus_horizontal(true);
+    }
+
+    pub fn focus_up(&mut self) {
+        if self.focus == Focus::Revisions && self.visible(Focus::Files) {
+            self.set_focus(Focus::Files);
+        }
+    }
+
+    pub fn focus_down(&mut self) {
+        if self.focus == Focus::Files && self.visible(Focus::Revisions) {
+            self.set_focus(Focus::Revisions);
+        }
+    }
+
+    /// One horizontal step from `f`, without visibility checks. Moving left
+    /// from a diff pane returns to the left section last used.
+    fn horizontal_step(&self, f: Focus, right: bool) -> Focus {
+        match (f, right) {
+            (Focus::Files | Focus::Revisions, true) => Focus::Old,
+            (Focus::Old, true) => Focus::New,
+            (Focus::New, true) => Focus::New,
+            (Focus::Old, false) => self.last_left,
+            (Focus::New, false) => Focus::Old,
+            (left, false) => left,
+        }
+    }
+
+    fn focus_horizontal(&mut self, right: bool) {
+        let mut at = self.focus;
+        // At most one step per region; a hidden region is stepped over.
+        for _ in 0..3 {
+            let next = self.horizontal_step(at, right);
+            if next == at {
+                return;
             }
-            next = further;
+            at = next;
+            if self.visible(at) {
+                self.set_focus(at);
+                return;
+            }
         }
-        next
     }
 
-    /// Toggle the file (git) panel. Hiding it while focused returns focus to the
-    /// last diff pane so movement keys keep working; showing it focuses it.
+    /// Change focus, remembering which left section was used (so `Ctrl-h` from
+    /// a diff pane returns to a familiar place) and the last diff pane.
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        if matches!(focus, Focus::Files | Focus::Revisions) {
+            self.last_left = focus;
+        }
+        self.remember_diff();
+    }
+
+    /// Toggle the left panel. Hiding it while focused returns focus to the last
+    /// diff pane so movement keys keep working; showing it focuses the files.
     pub fn toggle_files(&mut self) {
         // A direct file comparison has no file list to show.
         if self.pair.is_some() {
             return;
         }
-        if self.show_files {
-            self.show_files = false;
-            if self.focus == Focus::Files {
-                self.focus = self.last_diff;
+        if self.show_left {
+            self.show_left = false;
+            if matches!(self.zoom, Some(Focus::Files) | Some(Focus::Revisions)) {
+                self.zoom = None;
+            }
+            if matches!(self.focus, Focus::Files | Focus::Revisions) {
+                self.set_focus(self.last_diff);
             }
         } else {
-            self.show_files = true;
-            self.focus = Focus::Files;
+            self.show_left = true;
+            self.set_focus(Focus::Files);
         }
     }
 
-    /// Toggle single-pane zoom on the focused diff pane. No-op when the file
-    /// list is focused — zoom only applies to the two code panes.
+    /// Zoom the focused region: a diff pane keeps its side and drops the other,
+    /// the left panel drops both panes and takes the screen. Pressing it again
+    /// on the zoomed region restores the normal layout. The left panel is one
+    /// target whichever of its sections has focus.
     pub fn toggle_zoom(&mut self) {
         let target = match self.focus {
-            Focus::Old => Focus::Old,
-            Focus::New => Focus::New,
-            Focus::Files => return,
+            Focus::Revisions => Focus::Files,
+            other => other,
         };
         self.zoom = if self.zoom == Some(target) {
             None
@@ -585,7 +907,7 @@ impl App {
         let old_side = match self.focus {
             Focus::Old => true,
             Focus::New => false,
-            Focus::Files => return None,
+            Focus::Files | Focus::Revisions => return None,
         };
         let text = self.side_text(
             old_side,
@@ -608,7 +930,7 @@ impl App {
         match self.focus {
             Focus::Old => self.old_col = col,
             Focus::New => self.new_col = col,
-            Focus::Files => return,
+            Focus::Files | Focus::Revisions => return,
         }
         self.keep_cols_visible();
     }
@@ -658,7 +980,7 @@ impl App {
         let old_side = match self.focus {
             Focus::Old => true,
             Focus::New => false,
-            Focus::Files => return,
+            Focus::Files | Focus::Revisions => return,
         };
         let (flat, cur) = self.side_flat(old_side);
         if flat.is_empty() {
@@ -792,7 +1114,7 @@ impl App {
     /// Begin a jump. From the file list it targets the last diff pane (and
     /// focuses it), like `/`, so it works from anywhere.
     pub fn start_jump(&mut self) {
-        if matches!(self.focus, Focus::Files) {
+        if matches!(self.focus, Focus::Files | Focus::Revisions) {
             self.focus = self.last_diff;
         }
         self.jump = JumpState::Active;
@@ -1017,13 +1339,13 @@ impl App {
     /// Open the search prompt. From the file list it targets the last diff pane
     /// (and focuses it) so `/` works from anywhere.
     pub fn start_search(&mut self) {
-        if matches!(self.focus, Focus::Files) {
+        if matches!(self.focus, Focus::Files | Focus::Revisions) {
             self.focus = self.last_diff;
         }
         let old_side = match self.focus {
             Focus::Old => true,
             Focus::New => false,
-            Focus::Files => return,
+            Focus::Files | Focus::Revisions => return,
         };
         let (line, col) = if old_side {
             (self.old_cursor, self.cursor_col(true))
@@ -1129,13 +1451,13 @@ impl App {
     /// Step to the next/previous match **in the focused pane** (wrapping). From
     /// the file list it targets the last diff pane.
     fn search_step(&mut self, forward: bool) {
-        if matches!(self.focus, Focus::Files) {
+        if matches!(self.focus, Focus::Files | Focus::Revisions) {
             self.focus = self.last_diff;
         }
         let old_side = match self.focus {
             Focus::Old => true,
             Focus::New => false,
-            Focus::Files => return,
+            Focus::Files | Focus::Revisions => return,
         };
         let pos = if old_side {
             (self.old_cursor, self.cursor_col(true))
@@ -1400,7 +1722,7 @@ impl App {
         }
         self.remember();
         self.pair = Some((target.clone(), target));
-        self.show_files = false;
+        self.show_left = false;
         self.load_diff();
         self.jump_to_location(false, &loc);
     }
@@ -1441,7 +1763,7 @@ impl App {
             new_top: self.new_top,
             focus: self.focus,
             zoom: self.zoom,
-            show_files: self.show_files,
+            show_left: self.show_left,
             last_diff: self.last_diff,
         }
     }
@@ -1454,20 +1776,13 @@ impl App {
         };
         if let Some((old, new)) = point.pair {
             self.pair = Some((old, new));
-            self.show_files = point.show_files;
+            self.show_left = point.show_left;
             self.load_diff();
         } else {
             self.pair = None;
-            self.show_files = point.show_files;
-            if let Some(repo) = self.repo.clone() {
-                match repo.status() {
-                    Ok(mut files) => {
-                        tree::order(&mut files);
-                        self.files = files;
-                    }
-                    Err(e) => self.message = format!("status: {e}"),
-                }
-                self.rebuild_tree();
+            self.show_left = point.show_left;
+            if self.repo.is_some() {
+                let _ = self.reload_files();
                 if let Some(path) = &point.selected_path {
                     if let Some(index) = self.files.iter().position(|file| &file.path == path) {
                         self.selected = index;
@@ -1482,7 +1797,7 @@ impl App {
         self.new_cursor = clamp_line(point.new_cursor as isize, self.new_total());
         self.old_top = point.old_top.min(self.old_total().saturating_sub(vp));
         self.new_top = point.new_top.min(self.new_total().saturating_sub(vp));
-        self.focus = point.focus;
+        self.set_focus(point.focus);
         self.zoom = point.zoom;
         self.last_diff = point.last_diff;
         self.keep_cols_visible();
@@ -1510,7 +1825,7 @@ impl App {
         match self.focus {
             Focus::Old => self.frame(true, self.old_cursor, want_row),
             Focus::New => self.frame(false, self.new_cursor, want_row),
-            Focus::Files => {}
+            Focus::Files | Focus::Revisions => {}
         }
     }
 
@@ -1534,7 +1849,7 @@ impl App {
         let (old, cursor, top) = match self.focus {
             Focus::Old => (true, self.old_cursor, self.old_top),
             Focus::New => (false, self.new_cursor, self.new_top),
-            Focus::Files => return,
+            Focus::Files | Focus::Revisions => return,
         };
         let vp = self.viewport.max(1);
         let row = cursor.saturating_sub(top);
@@ -1696,7 +2011,7 @@ impl App {
         } else {
             let Some(repo) = &self.repo else { return };
             let entry = &self.files[self.selected];
-            match repo.before_after(entry) {
+            match repo.before_after(&self.comparison, entry) {
                 Ok((old, new)) => self.set_rows(&old, &new),
                 Err(e) => self.message = format!("diff: {e}"),
             }
@@ -1813,6 +2128,14 @@ fn read_pair(old: &Path, new: &Path) -> std::result::Result<(String, String), St
 /// A flat `(line, col, char)` code position. Each line ends with a `'\n'`
 /// sentinel so word motions cannot span a line break.
 type FlatChar = (usize, usize, char);
+
+/// A picker entry as one end of a comparison.
+fn rev_of(rev: &git::Revision) -> git::Rev {
+    git::Rev {
+        commit: rev.commit.clone(),
+        label: rev.label(),
+    }
+}
 
 fn clamp_line(v: isize, total: usize) -> usize {
     if total == 0 {
@@ -2093,6 +2416,12 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
     App {
         repo: None,
         pair: None,
+        comparison: git::Comparison::Worktree,
+        range_spec: String::new(),
+        range_input: None,
+        revisions: Vec::new(),
+        revision_selected: 0,
+        revision_marked: None,
         files: Vec::new(),
         tree: Vec::new(),
         file_row: Vec::new(),
@@ -2109,7 +2438,8 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         new_left: 0,
         focus: Focus::Old,
         zoom: None,
-        show_files: true,
+        last_left: Focus::Files,
+        show_left: true,
         last_diff: Focus::Old,
         viewport,
         old_code_w: 1,
@@ -2143,6 +2473,12 @@ mod tests {
         App {
             repo: None,
             pair: None,
+            comparison: git::Comparison::Worktree,
+            range_spec: String::new(),
+            range_input: None,
+            revisions: Vec::new(),
+            revision_selected: 0,
+            revision_marked: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -2159,7 +2495,8 @@ mod tests {
             new_left: 0,
             focus: Focus::Old,
             zoom: None,
-            show_files: true,
+            last_left: Focus::Files,
+            show_left: true,
             last_diff: Focus::Old,
             viewport,
             old_code_w: 1,
@@ -2332,13 +2669,60 @@ mod tests {
     }
 
     #[test]
-    fn focus_stops_at_the_panes() {
-        assert_eq!(Focus::Files.left(), Focus::Files);
-        assert_eq!(Focus::Files.right(), Focus::Old);
-        assert_eq!(Focus::Old.left(), Focus::Files);
-        assert_eq!(Focus::Old.right(), Focus::New);
-        assert_eq!(Focus::New.left(), Focus::Old);
-        assert_eq!(Focus::New.right(), Focus::New);
+    fn focus_moves_horizontally_across_columns() {
+        // Columns, left to right: the left panel, the old pane, the new pane.
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Files;
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Files);
+        app.focus_right();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_right();
+        assert_eq!(app.focus, Focus::New);
+        app.focus_right();
+        assert_eq!(app.focus, Focus::New);
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Old);
+        // Back to the left panel, and then no further.
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Files);
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Files);
+    }
+
+    #[test]
+    fn focus_moves_vertically_inside_the_left_panel() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Files;
+        app.focus_down();
+        assert_eq!(app.focus, Focus::Revisions);
+        // No vertical neighbours in the diff panes.
+        app.focus_right();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_down();
+        assert_eq!(app.focus, Focus::Old);
+        // Ctrl-k from Files has nowhere to go.
+        app.focus = Focus::Files;
+        app.focus_up();
+        assert_eq!(app.focus, Focus::Files);
+        app.focus_down();
+        app.focus_up();
+        assert_eq!(app.focus, Focus::Files);
+    }
+
+    #[test]
+    fn moving_left_returns_to_the_left_section_last_used() {
+        let mut app = app_with(two_hunks(), 12);
+        app.set_focus(Focus::Revisions);
+        app.focus_right(); // adjacent pane, remembering versions
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Revisions);
+        app.focus_up();
+        app.focus_right();
+        assert_eq!(app.focus, Focus::Old);
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Files);
     }
 
     #[test]
@@ -2350,13 +2734,13 @@ mod tests {
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::Old;
         app.zoom = Some(Focus::Old);
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::Old);
         assert_eq!(app.zoom, Some(Focus::Old));
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Files);
         assert_eq!(app.zoom, Some(Focus::Old));
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::Old);
         assert_eq!(app.zoom, Some(Focus::Old));
     }
@@ -2369,10 +2753,10 @@ mod tests {
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::New;
         app.zoom = Some(Focus::New);
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Files);
         assert_eq!(app.zoom, Some(Focus::New));
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::New);
         assert_eq!(app.zoom, Some(Focus::New));
     }
@@ -2384,7 +2768,7 @@ mod tests {
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::Files;
         app.zoom = Some(Focus::Old);
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::Old);
         app.toggle_zoom();
         assert_eq!(app.zoom, None);
@@ -2396,12 +2780,12 @@ mod tests {
         // hide the panel: focus falls back to that pane, not to nothing.
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::New;
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Files);
         app.toggle_files();
-        assert!(!app.show_files);
+        assert!(!app.show_left);
         assert_eq!(app.focus, Focus::Old);
     }
 
@@ -2410,23 +2794,110 @@ mod tests {
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::Old;
         app.toggle_files();
-        assert!(!app.show_files);
+        assert!(!app.show_left);
         app.toggle_files();
-        assert!(app.show_files);
+        assert!(app.show_left);
         assert_eq!(app.focus, Focus::Files);
     }
 
     #[test]
     fn focus_skips_a_hidden_file_panel() {
         let mut app = app_with(two_hunks(), 12);
-        app.show_files = false;
+        app.show_left = false;
         app.focus = Focus::Old;
         // Nothing visible to the left, so the step stops.
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::New);
-        app.focus_prev();
+        app.focus_left();
+        assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn ctrl_z_zooms_the_left_panel_too() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Files;
+        app.toggle_zoom();
+        assert_eq!(app.zoom, Some(Focus::Files));
+        // Both panes are out of the movement graph while the left panel is
+        // zoomed, and the two sections still reach each other.
+        assert!(!app.visible(Focus::Old));
+        assert!(!app.visible(Focus::New));
+        app.focus_right();
+        assert_eq!(app.focus, Focus::Files);
+        app.focus_down();
+        assert_eq!(app.focus, Focus::Revisions);
+        // Ctrl-z from either section clears the left zoom.
+        app.toggle_zoom();
+        assert_eq!(app.zoom, None);
+        assert!(app.visible(Focus::Old));
+
+        // Zooming the versions section is the same target.
+        app.toggle_zoom();
+        assert_eq!(app.zoom, Some(Focus::Files));
+        app.focus_up();
+        app.toggle_zoom();
+        assert_eq!(app.zoom, None);
+    }
+
+    #[test]
+    fn hiding_the_left_panel_clears_its_zoom() {
+        let mut app = app_with(two_hunks(), 12);
+        app.focus = Focus::Files;
+        app.toggle_zoom();
+        app.toggle_files();
+        assert!(!app.show_left);
+        assert_eq!(app.zoom, None);
+        assert!(app.visible(Focus::Old));
+    }
+
+    #[test]
+    fn the_versions_cursor_skips_graph_links() {
+        let sandbox = Sandbox::new("graph-links");
+        sandbox.write("base.txt", "base\n");
+        sandbox.commit("base");
+        sandbox.git(&["checkout", "-q", "-b", "topic"]);
+        sandbox.write("topic.txt", "topic\n");
+        sandbox.commit("topic");
+        sandbox.git(&["checkout", "-q", "main"]);
+        sandbox.write("main.txt", "main\n");
+        sandbox.commit("main");
+        sandbox.git(&["merge", "--no-ff", "-q", "-m", "merge topic", "topic"]);
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.focus_revisions();
+        assert!(
+            app.revisions.iter().any(|row| row.revision().is_none()),
+            "a merge should draw connector rows"
+        );
+        assert!(app.selected_revision().is_some());
+        // Down and up never land on a connector row, and G goes to the last
+        // commit, not to a trailing link.
+        for _ in 0..app.revisions.len() + 2 {
+            app.down();
+            assert!(app.selected_revision().is_some(), "landed on a link row");
+        }
+        assert_eq!(app.revision_selected, app.last_commit());
+        app.top();
+        assert_eq!(app.revision_selected, app.first_commit());
+        app.bottom();
+        assert_eq!(app.revision_selected, app.last_commit());
+    }
+
+    #[test]
+    fn applying_a_version_leaves_a_left_zoom() {
+        let sandbox = Sandbox::new("left-zoom");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.focus_revisions();
+        app.toggle_zoom();
+        assert_eq!(app.zoom, Some(Focus::Files));
+        app.apply_revision();
+        // Reading the diff needs the panes back.
+        assert_eq!(app.zoom, None);
         assert_eq!(app.focus, Focus::Old);
     }
 
@@ -2435,12 +2906,12 @@ mod tests {
         // With the panel hidden and the old pane zoomed, neither the panel nor
         // the hidden new pane is reachable, so both steps stay put.
         let mut app = app_with(two_hunks(), 12);
-        app.show_files = false;
+        app.show_left = false;
         app.focus = Focus::Old;
         app.zoom = Some(Focus::Old);
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::Old);
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
     }
 
@@ -2448,21 +2919,9 @@ mod tests {
     fn next_and_prev_file_move_the_selection_from_any_focus() {
         let mut app = app_with(vec![DiffRow::Ctx("ctx".into())], 10);
         app.files = vec![
-            git::FileEntry {
-                path: "a.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
-            git::FileEntry {
-                path: "b.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
-            git::FileEntry {
-                path: "c.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
+            git::FileEntry::worktree("a.txt", None, Some('M')),
+            git::FileEntry::worktree("b.txt", None, Some('M')),
+            git::FileEntry::worktree("c.txt", None, Some('M')),
         ];
         app.file_row = vec![0, 1, 2];
         app.selected = 0;
@@ -2988,9 +3447,9 @@ mod tests {
     fn focus_moves_normally_without_zoom() {
         let mut app = app_with(two_hunks(), 12);
         app.focus = Focus::Old;
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::New);
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
     }
 
@@ -3073,7 +3532,7 @@ mod tests {
         let pair = app.pair.as_ref().expect("pair mode");
         assert_eq!(pair.0, old_path);
         assert_eq!(pair.1, new_path);
-        assert!(!app.show_files);
+        assert!(!app.show_left);
         assert_eq!(app.focus, Focus::Old);
         assert!(app.message.is_empty());
         assert!(matches!(
@@ -3115,17 +3574,263 @@ mod tests {
         let (old_path, new_path, dir) = temp_pair("focus", "a\n", "a\n");
         let mut app = App::compare(&old_path, &new_path);
 
-        app.focus_next();
+        app.focus_right();
         assert_eq!(app.focus, Focus::New);
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
         // There is no file list to step onto.
-        app.focus_prev();
+        app.focus_left();
         assert_eq!(app.focus, Focus::Old);
         // And it cannot be shown either.
         app.toggle_files();
-        assert!(!app.show_files);
+        assert!(!app.show_left);
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ---- comparing revisions ----
+
+    /// A throwaway repo with a deterministic identity.
+    struct Sandbox {
+        dir: PathBuf,
+    }
+
+    impl Sandbox {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("differ-app-{}-{name}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            let sandbox = Sandbox { dir };
+            sandbox.git(&["init", "-q", "-b", "main"]);
+            sandbox.git(&["config", "user.email", "differ@example.com"]);
+            sandbox.git(&["config", "user.name", "differ tests"]);
+            sandbox.git(&["config", "commit.gpgsign", "false"]);
+            sandbox
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(&self.dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        }
+
+        fn write(&self, path: &str, text: &str) {
+            let path = self.dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        fn commit(&self, message: &str) {
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "-q", "-m", message]);
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn the_revision_prompt_edits_and_cancels() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.start_range_prompt();
+        assert_eq!(app.range_text(), Some(""));
+        for c in ['v', '1', 'x'] {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Backspace);
+        assert_eq!(app.range_text(), Some("v1"));
+        app.range_key(KeyCode::Esc);
+        assert_eq!(app.range_text(), None);
+        // Nothing changed.
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+        assert_eq!(app.range_spec, "");
+    }
+
+    #[test]
+    fn the_prompt_prefills_the_active_range() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.range_spec = "v1..HEAD".into();
+        app.start_range_prompt();
+        assert_eq!(app.range_text(), Some("v1..HEAD"));
+    }
+
+    #[test]
+    fn a_range_is_applied_from_the_prompt_and_cleared_again() {
+        let sandbox = Sandbox::new("range");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.write("b.txt", "new\n");
+        sandbox.commit("second");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        // The worktree is clean, so the default view has no files.
+        assert!(app.files.is_empty());
+
+        app.start_range_prompt();
+        for c in "v1..HEAD".chars() {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.comparison.label(), "v1..HEAD");
+        assert_eq!(app.range_spec, "v1..HEAD");
+        assert_eq!(app.files.len(), 2);
+        // The visible diff comes from the range, not the worktree.
+        assert!(app
+            .rows
+            .iter()
+            .any(|row| matches!(row, DiffRow::Ins(text) if text == "two")));
+
+        // An empty spec returns to the worktree view.
+        app.start_range_prompt();
+        let len = app.range_text().unwrap().chars().count();
+        for _ in 0..len {
+            app.range_key(KeyCode::Backspace);
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+        assert_eq!(app.range_spec, "");
+        assert!(app.files.is_empty());
+    }
+
+    #[test]
+    fn a_bad_spec_keeps_the_prompt_open() {
+        let sandbox = Sandbox::new("bad-spec");
+        sandbox.write("a.txt", "a\n");
+        sandbox.commit("first");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.start_range_prompt();
+        for c in "nope".chars() {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.range_text(), Some("nope"));
+        assert!(
+            app.message.contains("unknown revision: nope"),
+            "msg: {}",
+            app.message
+        );
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+
+        app.range_key(KeyCode::Esc);
+        assert_eq!(app.range_text(), None);
+    }
+
+    #[test]
+    fn with_range_starts_in_that_comparison() {
+        let sandbox = Sandbox::new("with-range");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.commit("second");
+
+        let app = App::with_range(Some(&sandbox.dir), "v1..HEAD").unwrap();
+        assert!(matches!(app.comparison, git::Comparison::Revs { .. }));
+        assert_eq!(app.range_spec, "v1..HEAD");
+        assert_eq!(app.files.len(), 1);
+        assert!(App::with_range(Some(&sandbox.dir), "nope").is_err());
+    }
+
+    #[test]
+    fn the_versions_panel_compares_the_selection_with_the_worktree() {
+        let sandbox = Sandbox::new("versions");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.commit("second");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        // The panel is loaded at startup, newest first, on HEAD.
+        assert_eq!(app.revisions.len(), 2);
+        assert_eq!(
+            app.revisions[0].revision().expect("a commit").subject,
+            "second"
+        );
+        assert_eq!(app.revision_selected, 0);
+        assert_eq!(app.revision_marked, None);
+
+        // Focus it, move to the tagged commit and compare it with the tree.
+        app.focus_revisions();
+        assert_eq!(app.focus, Focus::Revisions);
+        app.down();
+        app.apply_revision();
+        assert_eq!(app.comparison.label(), "v1..working tree");
+        assert_eq!(app.range_spec, "v1");
+        assert_eq!(app.files.len(), 1);
+        // Applying hands the keyboard back to the diff.
+        assert_eq!(app.focus, Focus::Old);
+
+        // The highlight follows the active comparison.
+        assert_eq!(app.revision_selected, 1);
+    }
+
+    #[test]
+    fn marking_a_base_compares_two_revisions() {
+        let sandbox = Sandbox::new("versions-base");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.commit("second");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.focus_revisions();
+        app.down(); // the tagged commit
+        app.mark_revision();
+        assert_eq!(app.revision_marked, Some(1));
+        // Marking again unmarks it.
+        app.mark_revision();
+        assert_eq!(app.revision_marked, None);
+        app.mark_revision();
+        app.up(); // back to HEAD
+        app.apply_revision();
+
+        let git::Comparison::Revs { from, to } = &app.comparison else {
+            panic!("expected two revisions, got {:?}", app.comparison);
+        };
+        assert_eq!(from.label, "v1");
+        assert_eq!(to.label, "main");
+        assert_eq!(app.range_spec, "v1..main");
+        // The panel keeps both ends highlighted after applying.
+        assert_eq!(app.revision_selected, 0);
+        assert_eq!(app.revision_marked, Some(1));
+    }
+
+    #[test]
+    fn focusing_the_versions_panel_shows_a_hidden_left_panel() {
+        let sandbox = Sandbox::new("versions-layout");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.show_left = false;
+        app.focus = Focus::Old;
+        app.focus_revisions();
+        assert!(app.show_left);
+        assert_eq!(app.focus, Focus::Revisions);
+    }
+
+    #[test]
+    fn the_versions_panel_needs_a_repository() {
+        let mut pair = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        pair.focus_revisions();
+        assert_eq!(pair.focus, Focus::Old);
+        assert!(pair.message.contains("no repository"), "{}", pair.message);
     }
 }

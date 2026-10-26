@@ -24,11 +24,21 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
-    let mut terminal = ratatui::init();
     let mut app = match args {
-        Args::Repo(repo) => App::new(repo.as_deref()),
+        Args::Repo {
+            start,
+            spec: Some(spec),
+        } => match App::with_range(start.as_deref(), &spec) {
+            Ok(app) => app,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
+        },
+        Args::Repo { start, spec: None } => App::new(start.as_deref()),
         Args::Files(old, new) => App::compare(&old, &new),
     };
+    let mut terminal = ratatui::init();
     let mut keymap = Keymap::default_bindings();
     app.help_lines = build_help(app.pair.is_none());
     let result = run(&mut terminal, &mut app, &mut keymap);
@@ -41,9 +51,18 @@ fn main() -> io::Result<()> {
 /// keys) does not exist.
 fn build_help(files_panel: bool) -> Vec<String> {
     const HELP: &[(&str, &str, &str)] = &[
-        ("Panels", "Ctrl-h / Ctrl-l", "focus previous / next panel"),
-        ("Panels", "Space e", "show/hide the file (git) panel"),
-        ("Panels", "Ctrl-z", "zoom the focused pane"),
+        ("Panels", "Ctrl-h / Ctrl-l", "focus the panel left / right"),
+        (
+            "Panels",
+            "Ctrl-j / Ctrl-k",
+            "focus below / above (versions / files)",
+        ),
+        (
+            "Panels",
+            "Space e",
+            "show/hide the changes and versions panel",
+        ),
+        ("Panels", "Ctrl-z", "zoom the focused region"),
         ("Movement", "h / j / k / l", "move left / down / up / right"),
         ("Movement", "w / b / e", "forward / back / end of word"),
         (
@@ -85,6 +104,13 @@ fn build_help(files_panel: bool) -> Vec<String> {
             "zz / zt / zb",
             "cursor line to middle / top / bottom",
         ),
+        (
+            "Revisions",
+            "Space v / Space V",
+            "focus the versions panel / type a range",
+        ),
+        ("Revisions", "Enter", "compare the focused revision"),
+        ("Revisions", "m", "mark/unmark a base revision"),
         ("Application", "R", "reload git status and the current diff"),
         ("Application", "?", "this help (j/k scroll, Esc close)"),
         ("Application", "q", "quit"),
@@ -94,7 +120,7 @@ fn build_help(files_panel: bool) -> Vec<String> {
     let mut section = "";
     for (sec, keys, desc) in HELP {
         // Without a file list, drop its section and the panel toggle.
-        if !files_panel && (*sec == "Files" || *keys == "Space e") {
+        if !files_panel && (*sec == "Files" || *sec == "Revisions" || *keys == "Space e") {
             continue;
         }
         if *sec != section {
@@ -112,8 +138,12 @@ fn build_help(files_panel: bool) -> Vec<String> {
 /// What the command line asked for: browse a repository, or compare two files.
 #[derive(Debug, PartialEq, Eq)]
 enum Args {
-    /// The repository start directory; `None` means the current directory.
-    Repo(Option<PathBuf>),
+    /// Browse a repository. `start` is its directory (`None` = current), and
+    /// `spec` the revision range when `--from`/`--to` were given.
+    Repo {
+        start: Option<PathBuf>,
+        spec: Option<String>,
+    },
     /// The old and new file to compare directly.
     Files(PathBuf, PathBuf),
 }
@@ -122,10 +152,13 @@ fn parse_args() -> Result<Args, String> {
     parse_args_from(std::env::args().skip(1))
 }
 
-/// Parse `[--repo <path>]` or `<old-file> <new-file>`. `--` ends option
-/// parsing, so file names may start with a dash.
+/// Parse `[--repo <path>] [--from <rev> [--to <rev>]]` or
+/// `<old-file> <new-file>`. `--` ends option parsing, so file names may start
+/// with a dash.
 fn parse_args_from<I: Iterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut repo = None;
+    let mut from = None;
+    let mut to = None;
     let mut files: Vec<PathBuf> = Vec::new();
     let mut options = true;
     let mut args = args;
@@ -141,6 +174,16 @@ fn parse_args_from<I: Iterator<Item = String>>(args: I) -> Result<Args, String> 
                     repo = Some(PathBuf::from(value));
                     continue;
                 }
+                "-f" | "--from" => {
+                    let value = args.next().ok_or("--from needs a revision")?;
+                    from = Some(value);
+                    continue;
+                }
+                "-t" | "--to" => {
+                    let value = args.next().ok_or("--to needs a revision")?;
+                    to = Some(value);
+                    continue;
+                }
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -153,27 +196,47 @@ fn parse_args_from<I: Iterator<Item = String>>(args: I) -> Result<Args, String> 
         }
         files.push(PathBuf::from(arg));
     }
-    match (repo, files.len()) {
-        (Some(_), 1..) => Err("--repo cannot be combined with files to compare".to_string()),
-        (Some(repo), _) => Ok(Args::Repo(Some(repo))),
-        (None, 0) => Ok(Args::Repo(None)),
-        (None, 2) => {
-            let mut paths = files.into_iter();
-            Ok(Args::Files(
-                paths.next().ok_or("expected two files")?,
-                paths.next().ok_or("expected two files")?,
-            ))
+    // `--from A` compares A with the worktree, so it stays a single spec;
+    // `--to B` alone means HEAD..B.
+    let spec = match (from, to) {
+        (None, None) => None,
+        (Some(from), None) => Some(from),
+        (None, Some(to)) => Some(format!("..{to}")),
+        (Some(from), Some(to)) => Some(format!("{from}..{to}")),
+    };
+    if !files.is_empty() {
+        if spec.is_some() {
+            return Err("--from/--to cannot be combined with files to compare".to_string());
         }
-        (None, n) => Err(format!("expected two files to compare, got {n}")),
+        if repo.is_some() {
+            return Err("--repo cannot be combined with files to compare".to_string());
+        }
+        if files.len() != 2 {
+            return Err(format!(
+                "expected two files to compare, got {}",
+                files.len()
+            ));
+        }
+        let mut paths = files.into_iter();
+        return Ok(Args::Files(
+            paths.next().ok_or("expected two files")?,
+            paths.next().ok_or("expected two files")?,
+        ));
     }
+    Ok(Args::Repo { start: repo, spec })
 }
 
 fn print_help() {
     println!(
         "differ - side-by-side diff viewer\n\n\
          usage:\n  \
-         differ [--repo <path>]\n  \
-         differ <old-file> <new-file>"
+         differ [--repo <path>] [--from <rev> [--to <rev>]]\n  \
+         differ <old-file> <new-file>\n\n\
+         revisions:\n  \
+         --from <rev> --to <rev>  two commits (A..B)\n  \
+         --from <rev>             a commit against the working tree (A)\n  \
+         --to <rev>               HEAD against a commit (..B)\n\n\
+         in the viewer: Space v focuses the versions panel, Enter compares the highlighted version, m marks a base, and Space V types a range."
     );
 }
 
@@ -212,6 +275,11 @@ fn run(
                 app.search_key(key.code);
                 continue;
             }
+            // The revision prompt captures keys until Enter or Esc.
+            if app.range_text().is_some() {
+                app.range_key(key.code);
+                continue;
+            }
             if let Resolution::Run(cmd) = keymap.feed(key) {
                 if cmd.run(app) == Outcome::Quit {
                     return Ok(());
@@ -231,18 +299,74 @@ mod tests {
 
     #[test]
     fn no_arguments_browses_the_current_directory() {
-        assert_eq!(parse(&[]).unwrap(), Args::Repo(None));
+        assert_eq!(
+            parse(&[]).unwrap(),
+            Args::Repo {
+                start: None,
+                spec: None
+            }
+        );
     }
 
     #[test]
     fn repo_flag_takes_a_path() {
         assert_eq!(
             parse(&["--repo", "some/repo"]).unwrap(),
-            Args::Repo(Some("some/repo".into()))
+            Args::Repo {
+                start: Some("some/repo".into()),
+                spec: None
+            }
         );
         assert_eq!(
             parse(&["-r", "some/repo"]).unwrap(),
-            Args::Repo(Some("some/repo".into()))
+            Args::Repo {
+                start: Some("some/repo".into()),
+                spec: None
+            }
+        );
+    }
+
+    #[test]
+    fn range_flags_build_a_revision_spec() {
+        // Two revisions are a `..` range.
+        assert_eq!(
+            parse(&["--from", "v0.2.0", "--to", "HEAD"]).unwrap(),
+            Args::Repo {
+                start: None,
+                spec: Some("v0.2.0..HEAD".into())
+            }
+        );
+        // A single revision compares against the working tree, so it stays
+        // one spec (not `v0.2.0..`, which would mean HEAD).
+        assert_eq!(
+            parse(&["--from", "v0.2.0"]).unwrap(),
+            Args::Repo {
+                start: None,
+                spec: Some("v0.2.0".into())
+            }
+        );
+        // Only `--to` means HEAD..B.
+        assert_eq!(
+            parse(&["--to", "HEAD"]).unwrap(),
+            Args::Repo {
+                start: None,
+                spec: Some("..HEAD".into())
+            }
+        );
+        assert_eq!(
+            parse(&["-f", "main", "-t", "topic"]).unwrap(),
+            Args::Repo {
+                start: None,
+                spec: Some("main..topic".into())
+            }
+        );
+        // The repository path and a range combine.
+        assert_eq!(
+            parse(&["--repo", "repo", "--from", "main"]).unwrap(),
+            Args::Repo {
+                start: Some("repo".into()),
+                spec: Some("main".into())
+            }
         );
     }
 
@@ -274,12 +398,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ranges_combined_with_files() {
+        assert!(parse(&["--from", "main", "a.txt", "b.txt"]).is_err());
+        assert!(parse(&["--to", "main", "a.txt", "b.txt"]).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_options() {
         assert!(parse(&["--bogus"]).is_err());
     }
 
     #[test]
-    fn repo_flag_needs_a_value() {
+    fn repo_and_range_flags_need_a_value() {
         assert!(parse(&["--repo"]).is_err());
+        assert!(parse(&["--from"]).is_err());
+        assert!(parse(&["--to"]).is_err());
     }
 }

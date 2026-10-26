@@ -131,6 +131,11 @@ pub const JUMP_BG: Color = Color::Rgb(0xf7, 0x76, 0x8e);
 pub const JUMP_FG: Color = Color::Rgb(0x1b, 0x1f, 0x24);
 pub const JUMP_MATCH_BG: Color = Color::Rgb(0x54, 0x48, 0x6a);
 
+// Versions list: the marked base gets a cool tint of its own, so it reads
+// alongside the reversed cursor row instead of relying on a subtle bold.
+pub const BASE_BG: Color = Color::Rgb(0x3a, 0x2e, 0x55);
+pub const BASE_FG: Color = Color::Rgb(0xc9, 0xb3, 0xf5);
+
 // Search (`/`): a muted yellow for matches, bright amber for the current one.
 pub const SEARCH_BG: Color = Color::Rgb(0x5a, 0x53, 0x2b);
 pub const SEARCH_CURRENT_BG: Color = Color::Rgb(0xc9, 0xa2, 0x27);

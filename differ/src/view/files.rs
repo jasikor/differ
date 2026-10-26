@@ -8,6 +8,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::git::Status;
 use crate::tree::Row;
 use crate::view::theme;
 
@@ -23,20 +24,21 @@ pub fn draw(f: &mut Frame, rows: &[Row], selected: Option<usize>, scroll: u16, a
                 Row::Dir { name, .. } => {
                     Line::from(Span::styled(format!("{indent}{name}/"), theme::dim_style()))
                 }
-                Row::File {
-                    name,
-                    staged,
-                    unstaged,
-                    ..
-                } => {
-                    let x = staged.unwrap_or('.');
-                    let y = unstaged.unwrap_or('.');
+                Row::File { name, status, .. } => {
+                    // The worktree view has git status's two columns; a revision
+                    // comparison has a single change code, padded to match.
+                    let tag = match *status {
+                        Status::Worktree { staged, unstaged } => {
+                            format!("{}{}", staged.unwrap_or('.'), unstaged.unwrap_or('.'))
+                        }
+                        Status::Range(code) => format!("{code} "),
+                    };
                     let style = if Some(i) == selected {
                         Style::default().add_modifier(Modifier::REVERSED)
                     } else {
                         Style::default()
                     };
-                    Line::from(Span::styled(format!("{indent}{x}{y} {name}"), style))
+                    Line::from(Span::styled(format!("{indent}{tag} {name}"), style))
                 }
             }
         })
