@@ -128,8 +128,9 @@ pub struct App {
     pub range_spec: String,
     /// The revision prompt's text while it is open.
     range_input: Option<String>,
-    /// Versions to choose from, newest first, and the one under the cursor.
-    pub revisions: Vec<git::Revision>,
+    /// Versions to choose from, newest first, with the branch-graph art; and
+    /// the row under the cursor (always a commit, never a graph-only link).
+    pub revisions: Vec<git::VersionRow>,
     pub revision_selected: usize,
     /// The base side when comparing two commits (an index into `revisions`).
     pub revision_marked: Option<usize>,
@@ -455,9 +456,7 @@ impl App {
     fn sync_revision_selection(&mut self) {
         let (selected, marked) = {
             let (from, to) = self.comparison_ends();
-            let find = |commit: Option<&str>| {
-                commit.and_then(|commit| self.revisions.iter().position(|rev| rev.commit == commit))
-            };
+            let find = |commit: Option<&str>| commit.and_then(|commit| self.commit_row(commit));
             // A two-commit comparison keeps its base marked; a revision
             // compared with the working tree is the selection, not the base.
             let marked = if to.is_some() { find(from) } else { None };
@@ -478,13 +477,10 @@ impl App {
         if self.focus != Focus::Revisions {
             return;
         }
-        let Some(selected) = self.revisions.get(self.revision_selected).cloned() else {
+        let Some(selected) = self.selected_revision().cloned() else {
             return;
         };
-        let base = self
-            .revision_marked
-            .and_then(|marked| self.revisions.get(marked))
-            .cloned();
+        let base = self.marked_revision().cloned();
         let comparison = match (base, selected) {
             (Some(base), selected) if base.commit != selected.commit => git::Comparison::Revs {
                 from: rev_of(&base),
@@ -515,7 +511,7 @@ impl App {
     /// Mark (or unmark) the highlighted version as the base of a two-commit
     /// comparison.
     pub fn mark_revision(&mut self) {
-        if self.focus != Focus::Revisions || self.revisions.is_empty() {
+        if self.focus != Focus::Revisions || self.selected_revision().is_none() {
             return;
         }
         self.revision_marked = match self.revision_marked {
@@ -524,10 +520,57 @@ impl App {
         };
     }
 
+    /// The commit the cursor is on.
+    fn selected_revision(&self) -> Option<&git::Revision> {
+        self.revisions.get(self.revision_selected)?.revision()
+    }
+
+    /// The marked base commit, if any.
+    fn marked_revision(&self) -> Option<&git::Revision> {
+        self.revisions.get(self.revision_marked?)?.revision()
+    }
+
+    /// The row showing `commit`, if it is in the list.
+    fn commit_row(&self, commit: &str) -> Option<usize> {
+        self.revisions
+            .iter()
+            .position(|row| row.revision().is_some_and(|rev| rev.commit == commit))
+    }
+
+    fn first_commit(&self) -> usize {
+        self.revisions
+            .iter()
+            .position(|row| row.revision().is_some())
+            .unwrap_or(0)
+    }
+
+    fn last_commit(&self) -> usize {
+        self.revisions
+            .iter()
+            .rposition(|row| row.revision().is_some())
+            .unwrap_or(0)
+    }
+
+    /// Move the versions cursor, stepping over graph-only link rows.
     fn move_revision(&mut self, delta: i32) {
-        let last = self.revisions.len().saturating_sub(1);
-        let at = self.revision_selected as i32 + delta;
-        self.revision_selected = at.clamp(0, last as i32) as usize;
+        if delta == 0 || self.revisions.is_empty() {
+            return;
+        }
+        let last = self.revisions.len() - 1;
+        let target = (self.revision_selected as i64 + delta as i64).clamp(0, last as i64) as usize;
+        if self.revisions[target].revision().is_some() {
+            self.revision_selected = target;
+            return;
+        }
+        let step: isize = if delta > 0 { 1 } else { -1 };
+        let mut at = target as isize;
+        while at >= 0 && (at as usize) <= last {
+            if self.revisions[at as usize].revision().is_some() {
+                self.revision_selected = at as usize;
+                return;
+            }
+            at += step;
+        }
     }
 
     pub fn selected_path(&self) -> Option<&str> {
@@ -628,7 +671,7 @@ impl App {
                 self.file_scroll = 0;
                 self.load_diff();
             }
-            Focus::Revisions => self.revision_selected = 0,
+            Focus::Revisions => self.revision_selected = self.first_commit(),
             Focus::Old => {
                 self.old_cursor = 0;
                 self.sync_from_old();
@@ -651,7 +694,7 @@ impl App {
                 self.load_diff();
             }
             Focus::Revisions => {
-                self.revision_selected = self.revisions.len().saturating_sub(1);
+                self.revision_selected = self.last_commit();
             }
             Focus::Old => {
                 self.old_cursor = self.old_total().saturating_sub(1);
@@ -2810,6 +2853,39 @@ mod tests {
     }
 
     #[test]
+    fn the_versions_cursor_skips_graph_links() {
+        let sandbox = Sandbox::new("graph-links");
+        sandbox.write("base.txt", "base\n");
+        sandbox.commit("base");
+        sandbox.git(&["checkout", "-q", "-b", "topic"]);
+        sandbox.write("topic.txt", "topic\n");
+        sandbox.commit("topic");
+        sandbox.git(&["checkout", "-q", "main"]);
+        sandbox.write("main.txt", "main\n");
+        sandbox.commit("main");
+        sandbox.git(&["merge", "--no-ff", "-q", "-m", "merge topic", "topic"]);
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.focus_revisions();
+        assert!(
+            app.revisions.iter().any(|row| row.revision().is_none()),
+            "a merge should draw connector rows"
+        );
+        assert!(app.selected_revision().is_some());
+        // Down and up never land on a connector row, and G goes to the last
+        // commit, not to a trailing link.
+        for _ in 0..app.revisions.len() + 2 {
+            app.down();
+            assert!(app.selected_revision().is_some(), "landed on a link row");
+        }
+        assert_eq!(app.revision_selected, app.last_commit());
+        app.top();
+        assert_eq!(app.revision_selected, app.first_commit());
+        app.bottom();
+        assert_eq!(app.revision_selected, app.last_commit());
+    }
+
+    #[test]
     fn applying_a_version_leaves_a_left_zoom() {
         let sandbox = Sandbox::new("left-zoom");
         sandbox.write("a.txt", "one\n");
@@ -3682,7 +3758,10 @@ mod tests {
         let mut app = App::new(Some(&sandbox.dir));
         // The panel is loaded at startup, newest first, on HEAD.
         assert_eq!(app.revisions.len(), 2);
-        assert_eq!(app.revisions[0].subject, "second");
+        assert_eq!(
+            app.revisions[0].revision().expect("a commit").subject,
+            "second"
+        );
         assert_eq!(app.revision_selected, 0);
         assert_eq!(app.revision_marked, None);
 

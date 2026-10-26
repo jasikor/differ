@@ -164,6 +164,26 @@ pub struct Revision {
     /// Decorations: `HEAD -> main, tag: v0.3.0, origin/main`.
     pub refs: String,
     pub subject: String,
+    /// The `git log --graph` art before this commit (`* `, `| * `, …).
+    pub graph: String,
+}
+
+/// One line of the versions list: a commit, or the graph art that connects it
+/// to the next one (`|\`, `|/`, …). Link lines are drawn but not selectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionRow {
+    Commit(Revision),
+    Link(String),
+}
+
+impl VersionRow {
+    /// The commit on this row, if it is one.
+    pub fn revision(&self) -> Option<&Revision> {
+        match self {
+            VersionRow::Commit(revision) => Some(revision),
+            VersionRow::Link(_) => None,
+        }
+    }
 }
 
 impl Revision {
@@ -283,18 +303,20 @@ impl Repo {
     }
 
     /// Revisions for the picker: up to `limit` commits across all refs, newest
-    /// first, with their decorations.
-    pub fn revisions(&self, limit: usize) -> Result<Vec<Revision>> {
+    /// first, with their decorations and the branch-graph art that shows how
+    /// they connect.
+    pub fn revisions(&self, limit: usize) -> Result<Vec<VersionRow>> {
         let limit = limit.to_string();
         let out = self.git(&[
             "log",
+            "--graph",
             "--all",
             "--date-order",
             "-n",
             &limit,
             "--format=%H%x1f%h%x1f%D%x1f%s",
         ])?;
-        Ok(parse_revisions(&out))
+        Ok(parse_versions(&out))
     }
 
     /// `git show <spec>` (e.g. `:path` for the index, `HEAD:path` for HEAD).
@@ -526,16 +548,30 @@ fn parse_name_status(out: &str) -> Vec<FileEntry> {
     files
 }
 
-/// Parse `git log --format=%H%x1f%h%x1f%D%x1f%s` output.
-fn parse_revisions(out: &str) -> Vec<Revision> {
+/// Parse `git log --graph --format=%H%x1f%h%x1f%D%x1f%s` output: the graph art
+/// comes first, then the commit fields; lines with only art are links.
+fn parse_versions(out: &str) -> Vec<VersionRow> {
+    // The graph is drawn from these characters; the fields start with a hash.
+    fn graph_len(line: &str) -> usize {
+        line.find(|c: char| !matches!(c, ' ' | '*' | '|' | '\\' | '/' | '_'))
+            .unwrap_or(line.len())
+    }
     out.lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(4, '\x1f');
-            Some(Revision {
-                commit: parts.next()?.to_string(),
-                short: parts.next()?.to_string(),
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let at = graph_len(line);
+            let (graph, rest) = line.split_at(at);
+            let mut parts = rest.splitn(4, '\x1f');
+            let commit = parts.next().unwrap_or("");
+            if commit.is_empty() {
+                return VersionRow::Link(graph.to_string());
+            }
+            VersionRow::Commit(Revision {
+                commit: commit.to_string(),
+                short: parts.next().unwrap_or("").to_string(),
                 refs: parts.next().unwrap_or("").to_string(),
                 subject: parts.next().unwrap_or("").to_string(),
+                graph: graph.to_string(),
             })
         })
         .collect()
@@ -850,16 +886,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_log_lines_into_revisions() {
-        let out = "aaa\x1faaa\x1fHEAD -> main, tag: v1\x1fFirst\n\
-                   bbb\x1fbbb\x1f\x1fSecond\n";
-        let revisions = parse_revisions(out);
-        assert_eq!(revisions.len(), 2);
-        assert_eq!(revisions[0].subject, "First");
+    fn parses_graph_lines_into_commits_and_links() {
+        let out = "* aaa\x1faaa\x1fHEAD -> main, tag: v1\x1fFirst\n\
+                   |\\  \n\
+                   | * bbb\x1fbbb\x1f\x1fSecond\n\
+                   |/  \n\
+                   * ccc\x1fccc\x1f\x1fThird\n";
+        let rows = parse_versions(out);
+        assert_eq!(rows.len(), 5);
+
+        let first = rows[0].revision().expect("a commit");
+        assert_eq!(first.subject, "First");
         // A tag is the best label; without refs the short commit is used.
-        assert_eq!(revisions[0].label(), "v1");
-        assert_eq!(revisions[1].refs, "");
-        assert_eq!(revisions[1].label(), "bbb");
+        assert_eq!(first.label(), "v1");
+        assert_eq!(first.graph, "* ");
+
+        assert!(matches!(&rows[1], VersionRow::Link(art) if art == "|\\  "));
+        let side = rows[2].revision().expect("a side-branch commit");
+        assert_eq!(side.subject, "Second");
+        assert_eq!(side.graph, "| * ");
+        assert_eq!(side.label(), "bbb");
+        assert!(matches!(&rows[3], VersionRow::Link(art) if art == "|/  "));
+        assert_eq!(rows[4].revision().expect("a commit").graph, "* ");
     }
 
     #[test]
@@ -870,6 +918,7 @@ mod tests {
                 short: "abc1234".into(),
                 refs: refs.into(),
                 subject: String::new(),
+                graph: String::new(),
             }
             .label()
         };
@@ -891,17 +940,21 @@ mod tests {
 
         let repo = sandbox.repo();
         let revisions = repo.revisions(10).unwrap();
-        assert_eq!(revisions.len(), 2);
-        assert_eq!(revisions[0].subject, "second");
-        assert_eq!(revisions[1].subject, "first");
-        assert_eq!(revisions[1].label(), "v1");
+        let commits: Vec<&Revision> = revisions.iter().filter_map(VersionRow::revision).collect();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "second");
+        assert_eq!(commits[1].subject, "first");
+        assert_eq!(commits[1].label(), "v1");
         assert!(
-            revisions[0].refs.contains("HEAD -> main"),
+            commits[0].refs.contains("HEAD -> main"),
             "refs: {:?}",
-            revisions[0].refs
+            commits[0].refs
         );
+        // Every commit line is marked in the graph.
+        assert!(commits.iter().all(|commit| commit.graph.contains('*')));
         // The limit keeps the newest commits.
-        assert_eq!(repo.revisions(1).unwrap().len(), 1);
+        let one = repo.revisions(1).unwrap();
+        assert_eq!(one.iter().filter_map(VersionRow::revision).count(), 1);
     }
 
     #[test]

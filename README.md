@@ -51,7 +51,9 @@ columns, `Ctrl-j`/`Ctrl-k` between the changed files and the versions, and
 `Space e` hides or shows the whole left column.
 
 The versions list is newest first across all branches, one row per commit, with
-its tag or branch (or the short hash when it has none) and its subject:
+the branch graph in front (lanes for parallel branches and merges — connector
+rows are drawn but the cursor skips them), then its tag or branch (or the short
+hash when it has none) and its subject:
 
 - `j`/`k` pick a version; `Enter` compares it with the working tree (the "what
   changed since…" view);

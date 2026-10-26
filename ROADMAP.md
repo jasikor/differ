@@ -74,8 +74,10 @@ Manual refresh for the MVP.
   headers, and `R` re-reads both files). `--repo` and two file arguments are
   mutually exclusive.
 - **Comparing revisions:** done — the left column now stacks the changed files
-  above a versions list (newest first, all refs, tag/branch in its own column,
-  separated by a labelled rule rather than a frame). `Ctrl-h`/`Ctrl-l` move
+  above a versions list (newest first, all refs, with the `git log --graph`
+  lane art so branches and merges read as a tree; connector rows are drawn but
+  skipped by the cursor, tag/branch in its own column, all separated from the
+  files by a labelled rule rather than a frame). `Ctrl-h`/`Ctrl-l` move
   between columns and `Ctrl-j`/`Ctrl-k` between the files and versions;
   `Space v` jumps to the versions list. `Enter` compares the highlighted
   version with the working tree, `m` marks a base (tinted, with a marker) so

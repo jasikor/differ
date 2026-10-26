@@ -18,7 +18,11 @@ use crate::app::{App, Focus, JumpState, Search};
 use crate::model;
 
 /// Width of the left column: changed files on top, versions below.
-const LEFT_W: u16 = 46;
+const LEFT_W: u16 = 52;
+
+/// Columns the branch graph may take before it is clipped (the commit marker
+/// at the end is always kept).
+const GRAPH_W: usize = 12;
 
 /// Build metadata stamped by `build.rs`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -465,6 +469,7 @@ fn draw_revisions(f: &mut Frame, app: &App, area: Rect, style: Style) {
         match app
             .revision_marked
             .and_then(|marked| app.revisions.get(marked))
+            .and_then(|row| row.revision())
         {
             Some(base) => format!("versions: base {}", base.label()),
             None => "versions: Enter compares with working tree".to_string(),
@@ -493,34 +498,77 @@ fn draw_revisions(f: &mut Frame, app: &App, area: Rect, style: Style) {
     let offset = app
         .revision_selected
         .saturating_sub(visible.saturating_sub(1));
+    let graph_w = graph_width(app);
     let lines: Vec<Line> = app
         .revisions
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|(index, rev)| {
-            let marked = Some(index) == app.revision_marked;
-            let marker = if marked { "▸" } else { " " };
-            let mut row = if index == app.revision_selected {
-                theme::active_style().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-            // The base keeps its own colour whether or not the list is focused.
-            if marked {
-                row = row
-                    .bg(theme::BASE_BG)
-                    .fg(theme::BASE_FG)
-                    .add_modifier(Modifier::BOLD);
+        .map(|(index, row)| match row {
+            // Graph-only rows connect the commits above and below; they are
+            // never selected, so they get no marker.
+            crate::git::VersionRow::Link(graph) => {
+                Line::from(Span::styled(graph_cell(graph, graph_w), theme::dim_style()))
             }
-            Line::from(Span::styled(
-                format!("{marker}{} {}", label_cell(&rev.label()), rev.subject),
-                row,
-            ))
+            crate::git::VersionRow::Commit(rev) => {
+                let marked = Some(index) == app.revision_marked;
+                let marker = if marked { "▸" } else { " " };
+                let mut style = if index == app.revision_selected {
+                    theme::active_style().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                // The base keeps its own colour whether or not the list is
+                // focused.
+                if marked {
+                    style = style
+                        .bg(theme::BASE_BG)
+                        .fg(theme::BASE_FG)
+                        .add_modifier(Modifier::BOLD);
+                }
+                Line::from(Span::styled(
+                    format!(
+                        "{}{marker}{} {}",
+                        graph_cell(&rev.graph, graph_w),
+                        label_cell(&rev.label()),
+                        rev.subject
+                    ),
+                    style,
+                ))
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines), body);
+}
+
+/// The graph column width: the widest art in the list, capped so the names and
+/// subjects keep their room. Padding every row to it keeps the label and
+/// subject columns aligned.
+fn graph_width(app: &App) -> usize {
+    app.revisions
+        .iter()
+        .map(|row| match row {
+            crate::git::VersionRow::Commit(rev) => rev.graph.chars().count(),
+            crate::git::VersionRow::Link(graph) => graph.chars().count(),
+        })
+        .max()
+        .unwrap_or(0)
+        .min(GRAPH_W)
+}
+
+/// One row's graph art in a `width`-wide cell. When the art is wider than the
+/// column the leftmost lanes are dropped — the commit marker sits at the right
+/// end, so the row still reads as a commit.
+fn graph_cell(graph: &str, width: usize) -> String {
+    let chars: Vec<char> = graph.chars().collect();
+    if chars.len() > width {
+        chars[chars.len() - width..].iter().collect()
+    } else {
+        let mut cell = graph.to_string();
+        cell.push_str(&" ".repeat(width - chars.len()));
+        cell
+    }
 }
 
 /// Pad (or clip) the revision's label into a fixed column so the subjects line
@@ -815,12 +863,13 @@ mod tests {
     #[test]
     fn the_left_panel_stacks_changes_above_versions() {
         let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
-        app.revisions = vec![crate::git::Revision {
+        app.revisions = vec![crate::git::VersionRow::Commit(crate::git::Revision {
             commit: "abc1234".into(),
             short: "abc1234".into(),
             refs: "tag: v1".into(),
             subject: "First commit".into(),
-        }];
+            graph: "* ".into(),
+        })];
         app.revision_selected = 0;
         app.focus = Focus::Revisions;
         let mut term = Terminal::new(TestBackend::new(100, 16)).unwrap();
@@ -872,12 +921,13 @@ mod tests {
     #[test]
     fn zoomed_left_panel_takes_the_whole_screen() {
         let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
-        app.revisions = vec![crate::git::Revision {
+        app.revisions = vec![crate::git::VersionRow::Commit(crate::git::Revision {
             commit: "abc1234".into(),
             short: "abc1234".into(),
             refs: "tag: v1".into(),
             subject: "First commit".into(),
-        }];
+            graph: "* ".into(),
+        })];
         app.focus = Focus::Files;
         app.toggle_zoom();
         let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
@@ -903,18 +953,20 @@ mod tests {
     fn the_marked_base_has_its_own_colour_and_marker() {
         let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
         app.revisions = vec![
-            crate::git::Revision {
+            crate::git::VersionRow::Commit(crate::git::Revision {
                 commit: "aaaaaaa".into(),
                 short: "aaaaaaa".into(),
                 refs: "HEAD -> main".into(),
                 subject: "Tip".into(),
-            },
-            crate::git::Revision {
+                graph: "* ".into(),
+            }),
+            crate::git::VersionRow::Commit(crate::git::Revision {
                 commit: "bbbbbbb".into(),
                 short: "bbbbbbb".into(),
                 refs: "tag: v1".into(),
                 subject: "Base".into(),
-            },
+                graph: "* ".into(),
+            }),
         ];
         app.revision_selected = 0;
         app.revision_marked = Some(1);
@@ -937,11 +989,58 @@ mod tests {
         let tip_y = tip_y.expect("cursor row");
 
         // The base is marked and tinted, so it reads even without focus.
-        assert_eq!(buf[(0, base_y)].symbol(), "▸");
-        assert_eq!(buf[(2, base_y)].bg, theme::BASE_BG);
+        // The row starts with the graph prefix ("* "), then the marker.
+        assert_eq!(buf[(2, base_y)].symbol(), "▸");
+        assert_eq!(buf[(0, base_y)].bg, theme::BASE_BG);
         // The cursor row is reversed instead, a different look entirely.
-        assert!(buf[(2, tip_y)].modifier.contains(Modifier::REVERSED));
-        assert_ne!(buf[(2, tip_y)].bg, theme::BASE_BG);
+        assert!(buf[(0, tip_y)].modifier.contains(Modifier::REVERSED));
+        assert_ne!(buf[(0, tip_y)].bg, theme::BASE_BG);
+    }
+
+    #[test]
+    fn versions_rows_show_the_branch_graph() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        let commit = |commit: &str, subject: &str, graph: &str| {
+            crate::git::VersionRow::Commit(crate::git::Revision {
+                commit: commit.into(),
+                short: commit.into(),
+                refs: String::new(),
+                subject: subject.into(),
+                graph: graph.into(),
+            })
+        };
+        app.revisions = vec![
+            commit("aaaaaaa", "Tip", "* "),
+            crate::git::VersionRow::Link("|\\  ".into()),
+            commit("bbbbbbb", "Side", "| * "),
+            crate::git::VersionRow::Link("|/  ".into()),
+        ];
+        app.focus = Focus::Revisions;
+        let mut term = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+
+        let rows: Vec<String> = (0..16u16)
+            .map(|y| (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect();
+        let tip = rows.iter().position(|row| row.contains("Tip")).unwrap();
+        let side = rows.iter().position(|row| row.contains("Side")).unwrap();
+        assert!(rows[tip].starts_with("* "), "tip row: {:?}", rows[tip]);
+        assert!(rows[side].starts_with("| * "), "side row: {:?}", rows[side]);
+        // The connector lines sit between the commits they join.
+        assert!(
+            rows[tip + 1].starts_with("|\\"),
+            "link: {:?}",
+            rows[tip + 1]
+        );
+        assert!(
+            rows[side + 1].starts_with("|/"),
+            "link: {:?}",
+            rows[side + 1]
+        );
+        // A commit row is selectable; the link rows are not.
+        app.focus_revisions();
+        assert_eq!(app.revision_selected, 0);
     }
 
     #[test]
