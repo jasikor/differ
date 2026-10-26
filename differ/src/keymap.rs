@@ -108,9 +108,12 @@ impl Keymap {
             one(Up, Command::Up),
             one(Char('l'), Command::Right),
             one(Right, Command::Right),
-            // Cycle panels, vim-window style.
-            ctrl(Char('h'), Command::FocusPrev),
-            ctrl(Char('l'), Command::FocusNext),
+            // Move focus: Ctrl-h/l across the columns, Ctrl-j/k across the two
+            // stacked sections of the left panel.
+            ctrl(Char('h'), Command::FocusLeft),
+            ctrl(Char('l'), Command::FocusRight),
+            ctrl(Char('j'), Command::FocusDown),
+            ctrl(Char('k'), Command::FocusUp),
             // Scroll the focused pane's view a line (vim's Ctrl-e / Ctrl-y).
             ctrl(Char('e'), Command::ScrollDown),
             ctrl(Char('y'), Command::ScrollUp),
@@ -120,8 +123,12 @@ impl Keymap {
             two(' ', 'e', Command::ToggleFiles),
             two(' ', 'n', Command::NextFile),
             two(' ', 'p', Command::PrevFile),
-            // Space v compares revisions (the worktree is the default).
+            // Space v focuses the versions list; Space V types a range instead.
             two(' ', 'v', Command::CompareRevisions),
+            two(' ', 'V', Command::TypeRevision),
+            // In the versions list: apply the highlighted one, mark a base.
+            one(Enter, Command::ApplyRevision),
+            one(Char('m'), Command::MarkRevision),
             // ? opens the full-screen key help.
             one(Char('?'), Command::Help),
             // s jumps to a visible character (flash-style).
@@ -242,19 +249,29 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_h_and_ctrl_l_cycle_panels() {
+    fn ctrl_hjkl_move_focus_between_panels() {
         let mut km = Keymap::default_bindings();
         assert_eq!(
             km.feed(Key::ctrl(KeyCode::Char('h'))),
-            Resolution::Run(Command::FocusPrev)
+            Resolution::Run(Command::FocusLeft)
         );
         assert_eq!(
             km.feed(Key::ctrl(KeyCode::Char('l'))),
-            Resolution::Run(Command::FocusNext)
+            Resolution::Run(Command::FocusRight)
+        );
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('j'))),
+            Resolution::Run(Command::FocusDown)
+        );
+        assert_eq!(
+            km.feed(Key::ctrl(KeyCode::Char('k'))),
+            Resolution::Run(Command::FocusUp)
         );
         // The plain letters are the motions, not panel focus.
         assert_eq!(km.feed(plain('h')), Resolution::Run(Command::Left));
         assert_eq!(km.feed(plain('l')), Resolution::Run(Command::Right));
+        assert_eq!(km.feed(plain('j')), Resolution::Run(Command::Down));
+        assert_eq!(km.feed(plain('k')), Resolution::Run(Command::Up));
     }
 
     #[test]
@@ -398,13 +415,16 @@ mod tests {
         let mut km = Keymap::default_bindings();
         assert_eq!(km.feed(plain(' ')), Resolution::Pending);
         let keys: Vec<String> = km.continuations().iter().map(|(k, _)| k.label()).collect();
-        for k in ["e", "n", "p", "v"] {
+        for k in ["e", "n", "p", "v", "V"] {
             assert!(keys.contains(&k.to_string()), "missing {k} in {keys:?}");
         }
-        assert_eq!(keys.len(), 4);
+        assert_eq!(keys.len(), 5);
         let hint = km.hint();
         assert!(hint.starts_with("Space: "), "hint: {hint}");
-        assert!(hint.contains("toggle file panel"), "hint: {hint}");
+        assert!(
+            hint.contains("toggle changes/versions panel"),
+            "hint: {hint}"
+        );
     }
 
     #[test]

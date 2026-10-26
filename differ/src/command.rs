@@ -44,10 +44,12 @@ pub enum Command {
     WordEndBig,
     NextHunk,
     PrevHunk,
-    /// Cycle focus to the previous region.
-    FocusPrev,
-    /// Cycle focus to the next region.
-    FocusNext,
+    /// Move focus to the next region left / right.
+    FocusLeft,
+    FocusRight,
+    /// Move focus between the left panel's sections (versions / files).
+    FocusUp,
+    FocusDown,
     /// Put the focused pane's cursor line at the middle / top / bottom.
     CursorCenter,
     CursorTop,
@@ -57,7 +59,7 @@ pub enum Command {
     ScrollUp,
     /// Zoom the focused diff pane to the full width (toggle).
     ToggleZoom,
-    /// Show/hide the file (git) panel.
+    /// Show/hide the left panel (changed files + versions).
     ToggleFiles,
     /// Start the `s` jump: type a character, then a label to teleport there.
     StartJump,
@@ -72,8 +74,14 @@ pub enum Command {
     GotoReferences,
     /// Return from a symbol jump.
     Back,
-    /// Open the revision prompt (`A..B`, `A...B`, or `A` vs the worktree).
+    /// Focus the versions list in the left panel.
     CompareRevisions,
+    /// Compare the highlighted version (from the marked base, if any).
+    ApplyRevision,
+    /// Mark/unmark the highlighted version as the base of a comparison.
+    MarkRevision,
+    /// Type a revision spec instead of picking from the versions list.
+    TypeRevision,
     /// Select the next / previous file, whatever has focus.
     NextFile,
     PrevFile,
@@ -105,8 +113,10 @@ impl Command {
             Command::WordEndBig => app.word_end_big(),
             Command::NextHunk => app.next_hunk(),
             Command::PrevHunk => app.prev_hunk(),
-            Command::FocusPrev => app.focus_prev(),
-            Command::FocusNext => app.focus_next(),
+            Command::FocusLeft => app.focus_left(),
+            Command::FocusRight => app.focus_right(),
+            Command::FocusUp => app.focus_up(),
+            Command::FocusDown => app.focus_down(),
             Command::CursorCenter => app.cursor_center(),
             Command::CursorTop => app.cursor_top(),
             Command::CursorBottom => app.cursor_bottom(),
@@ -121,7 +131,10 @@ impl Command {
             Command::GotoDefinition => app.goto_definition(),
             Command::GotoReferences => app.goto_references(),
             Command::Back => app.go_back(),
-            Command::CompareRevisions => app.start_range_prompt(),
+            Command::CompareRevisions => app.focus_revisions(),
+            Command::ApplyRevision => app.apply_revision(),
+            Command::MarkRevision => app.mark_revision(),
+            Command::TypeRevision => app.start_range_prompt(),
             Command::NextFile => app.next_file(),
             Command::PrevFile => app.prev_file(),
             Command::Help => app.toggle_help(),
@@ -153,15 +166,17 @@ impl Command {
             Command::WordEndBig => "WORD end",
             Command::NextHunk => "next change",
             Command::PrevHunk => "previous change",
-            Command::FocusPrev => "focus previous panel",
-            Command::FocusNext => "focus next panel",
+            Command::FocusLeft => "focus left",
+            Command::FocusRight => "focus right",
+            Command::FocusUp => "focus up",
+            Command::FocusDown => "focus down",
             Command::CursorCenter => "cursor to middle",
             Command::CursorTop => "cursor to top",
             Command::CursorBottom => "cursor to bottom",
             Command::ScrollDown => "scroll view down",
             Command::ScrollUp => "scroll view up",
             Command::ToggleZoom => "zoom pane",
-            Command::ToggleFiles => "toggle file panel",
+            Command::ToggleFiles => "toggle changes/versions panel",
             Command::StartJump => "jump (flash)",
             Command::Search => "search",
             Command::SearchNext => "next match",
@@ -169,7 +184,10 @@ impl Command {
             Command::GotoDefinition => "go to definition",
             Command::GotoReferences => "go to references",
             Command::Back => "back",
-            Command::CompareRevisions => "compare revisions",
+            Command::CompareRevisions => "focus versions",
+            Command::ApplyRevision => "compare revision",
+            Command::MarkRevision => "mark base revision",
+            Command::TypeRevision => "type a revision range",
             Command::NextFile => "next file",
             Command::PrevFile => "previous file",
             Command::Help => "help",

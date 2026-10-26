@@ -73,6 +73,19 @@ Manual refresh for the MVP.
   without git (the file panel is hidden, the paths are shown in the pane
   headers, and `R` re-reads both files). `--repo` and two file arguments are
   mutually exclusive.
+- **Comparing revisions:** done — the left column now stacks the changed files
+  above a versions list (newest first, all refs, tag/branch in its own column,
+  separated by a labelled rule rather than a frame). `Ctrl-h`/`Ctrl-l` move
+  between columns and `Ctrl-j`/`Ctrl-k` between the files and versions;
+  `Space v` jumps to the versions list. `Enter` compares the highlighted
+  version with the working tree, `m` marks a base (tinted, with a marker) so
+  `Enter` on another version compares the two, and `Space V` types a spec
+  instead (`A..B`, `A...B` from the merge base, `A` against the working tree,
+  empty for the worktree view).
+  `--from`/`--to` do the same from the command line. `Space e` shows/hides the
+  whole left column. The file list, `R` and `Ctrl-o` follow the active
+  comparison; pane heads name the revs and the status line carries the range.
+  `gd`/`gr` still grep the working tree.
 - **File switching:** done — `Space n`/`Space p` select the next/previous file
   from any focus (or with the panel hidden), so you can move through the change
   set without leaving a diff pane; it stops at the ends and keeps the current
@@ -84,11 +97,12 @@ Manual refresh for the MVP.
 - **Cursor placement:** done — `zz`/`zt`/`zb` put the focused pane's cursor
   line at the middle/top/bottom (vim-style), and `Ctrl-e`/`Ctrl-y` scroll the
   view a line while the cursor keeps its line; the panes stay paired.
-- **Zoom:** done — `Ctrl-z` shows just the focused diff pane full width (the
-  other pane, gutter and its ruler are hidden; the in-pane rails stay); the
-  hidden pane drops out of the `Ctrl-h`/`Ctrl-l` cycle, and switching to the
-  file list keeps the zoom (the pane stays full width until you toggle it off
-  from the zoomed pane).
+- **Zoom:** done — `Ctrl-z` zooms the focused region. A diff pane keeps its
+  side and hides the other pane, gutter and its ruler (the in-pane rails
+  stay); the left panel drops both panes and takes the screen. Hidden regions
+  drop out of the `Ctrl-h`/`Ctrl-l`/`Ctrl-j`/`Ctrl-k` movement, and the zoom
+  stays until you toggle it off from the zoomed region (hiding the left panel
+  clears a left-panel zoom).
 - **Panel toggle:** done — `Space` is the leader and `Space e` shows/hides the
   file (git) panel; hidden, the diff panes take the full width and the panel
   drops out of the `Ctrl-h`/`Ctrl-l` cycle. Hiding it while focused returns
@@ -154,13 +168,13 @@ Manual refresh for the MVP.
 
 Auto file-watching (deliberately *not* wanted — see Locked decision 5),
 hunk/line-level staging, pull/fetch/branch management,
-signing, config/theming, mouse, multi-repo, history browsing, arbitrary refs.
+signing, config/theming, mouse, multi-repo, per-file history browsing.
 
 ## Architecture
 
 ```
 differ-core/src/
-  git.rs       shell-out git: status, contents, stage, commit, push
+  git.rs       shell-out git: status, comparisons, contents, stage, commit, push
   model.rs     DiffRow, diff_rows(), intra_line(), hunks()
   tree.rs      file list ordering
   symbol.rs    ripgrep + tree-sitter definitions / references

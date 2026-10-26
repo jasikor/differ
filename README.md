@@ -24,7 +24,9 @@ cargo run -p differ -- old.txt new.txt        # compare two files directly
 In direct file mode there is no file panel; the two paths are shown in the pane
 headers, and `R` re-reads both files.
 
-**Keys:** `Ctrl-h`/`Ctrl-l` cycle panels (files / old / new) · `h`/`j`/`k`/`l`
+**Keys:** `Ctrl-h`/`Ctrl-l` move focus left/right (left panel → old → new),
+`Ctrl-j`/`Ctrl-k` up/down inside the left panel (files ↔ versions) ·
+`h`/`j`/`k`/`l`
 (or arrows) move · `w`/`b`/`e` by word, `W`/`B`/`E` by WORD · `0`/`^`/`$`
 line start / first non-blank / end · `]c`/`[c` (or `Ctrl-n`/`Ctrl-p`)
 next/prev change · `gd`/`gr` go to definition / list references (ripgrep,
@@ -32,12 +34,43 @@ tree-sitter for Rust) ·
 `Ctrl-o` back after a symbol jump · `s` + a
 pattern to jump to a visible match (flash-style) · `/` search (literal,
 smartcase) with `n`/`N` to repeat · `Space n`/`Space p` next/previous file from
-any focus · `gg`/`G` top/bottom ·
+any focus · `Space v` focus the versions panel (then `Enter` compares, `m`
+marks a base, `Space V` types a range) · `gg`/`G` top/bottom ·
 `zz`/`zt`/`zb` put the cursor line at middle/top/bottom · `Ctrl-e`/`Ctrl-y`
-scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused pane ·
-`Space e` show/hide the file panel · `PgUp`/`PgDn` page ·
+scroll the view a line (cursor stays) · `Ctrl-z` zoom the focused region (a diff pane or the left panel) ·
+`Space e` show/hide the changes and versions panel · `PgUp`/`PgDn` page ·
 `R` reload · `q` quit · `Esc` cancels a pending key · `?` full-screen key
 help (press a prefix like `Space` to see its options in the status line).
+
+## Comparing revisions
+
+`differ` reads either the working tree (the default) or two versions already
+committed. The screen has three parts: the left column keeps the changed files
+on top and the versions below, and the two diff panes take the rest. `Ctrl-h`/`Ctrl-l` move between the
+columns, `Ctrl-j`/`Ctrl-k` between the changed files and the versions, and
+`Space e` hides or shows the whole left column.
+
+The versions list is newest first across all branches, one row per commit, with
+its tag or branch (or the short hash when it has none) and its subject:
+
+- `j`/`k` pick a version; `Enter` compares it with the working tree (the "what
+  changed since…" view);
+- `m` marks it as a base, then `Enter` on another version compares the two;
+- `Space V` types a spec instead, for what the list cannot express: `A..B` (two
+  commits), `A...B` (from their merge base) or `A` (against the working tree).
+  An empty spec returns to the working tree view.
+
+The same ranges work from the command line:
+
+```sh
+cargo run -p differ -- --from v0.2.0            # v0.2.0 vs the working tree
+cargo run -p differ -- --from v0.2.0 --to HEAD  # two commits
+```
+
+The file list, `R` and `Ctrl-o` all follow the active comparison; the pane
+headers name the revisions (`old v0.2.0 (1a2b3c4)`) and the status line carries
+the range. `gd`/`gr` still search the working tree, so line numbers can be
+stale when reading an old revision.
 
 ## Graphical experiment
 

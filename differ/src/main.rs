@@ -51,9 +51,18 @@ fn main() -> io::Result<()> {
 /// keys) does not exist.
 fn build_help(files_panel: bool) -> Vec<String> {
     const HELP: &[(&str, &str, &str)] = &[
-        ("Panels", "Ctrl-h / Ctrl-l", "focus previous / next panel"),
-        ("Panels", "Space e", "show/hide the file (git) panel"),
-        ("Panels", "Ctrl-z", "zoom the focused pane"),
+        ("Panels", "Ctrl-h / Ctrl-l", "focus the panel left / right"),
+        (
+            "Panels",
+            "Ctrl-j / Ctrl-k",
+            "focus below / above (versions / files)",
+        ),
+        (
+            "Panels",
+            "Space e",
+            "show/hide the changes and versions panel",
+        ),
+        ("Panels", "Ctrl-z", "zoom the focused region"),
         ("Movement", "h / j / k / l", "move left / down / up / right"),
         ("Movement", "w / b / e", "forward / back / end of word"),
         (
@@ -96,10 +105,12 @@ fn build_help(files_panel: bool) -> Vec<String> {
             "cursor line to middle / top / bottom",
         ),
         (
-            "Application",
-            "Space v",
-            "compare revisions (A..B, A...B, A)",
+            "Revisions",
+            "Space v / Space V",
+            "focus the versions panel / type a range",
         ),
+        ("Revisions", "Enter", "compare the focused revision"),
+        ("Revisions", "m", "mark/unmark a base revision"),
         ("Application", "R", "reload git status and the current diff"),
         ("Application", "?", "this help (j/k scroll, Esc close)"),
         ("Application", "q", "quit"),
@@ -109,7 +120,7 @@ fn build_help(files_panel: bool) -> Vec<String> {
     let mut section = "";
     for (sec, keys, desc) in HELP {
         // Without a file list, drop its section and the panel toggle.
-        if !files_panel && (*sec == "Files" || *keys == "Space e") {
+        if !files_panel && (*sec == "Files" || *sec == "Revisions" || *keys == "Space e") {
             continue;
         }
         if *sec != section {
@@ -225,7 +236,7 @@ fn print_help() {
          --from <rev> --to <rev>  two commits (A..B)\n  \
          --from <rev>             a commit against the working tree (A)\n  \
          --to <rev>               HEAD against a commit (..B)\n\n\
-         in the viewer, Space v opens the same prompt (A..B, A...B, A)."
+         in the viewer: Space v focuses the versions panel, Enter compares the highlighted version, m marks a base, and Space V types a range."
     );
 }
 

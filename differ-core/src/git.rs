@@ -155,6 +155,41 @@ impl Rev {
     }
 }
 
+/// One entry in the revision picker: a commit with its refs and subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revision {
+    pub commit: String,
+    /// Abbreviated commit hash.
+    pub short: String,
+    /// Decorations: `HEAD -> main, tag: v0.3.0, origin/main`.
+    pub refs: String,
+    pub subject: String,
+}
+
+impl Revision {
+    /// What to call the revision in headings: its first tag, else the checked
+    /// out branch, else any other ref, else the short commit.
+    pub fn label(&self) -> String {
+        let parts: Vec<&str> = self
+            .refs
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        if let Some(tag) = parts.iter().find_map(|part| part.strip_prefix("tag: ")) {
+            return tag.to_string();
+        }
+        if let Some(branch) = parts.iter().find_map(|part| part.strip_prefix("HEAD -> ")) {
+            return branch.to_string();
+        }
+        parts
+            .iter()
+            .find(|part| **part != "HEAD")
+            .map(|part| (*part).to_string())
+            .unwrap_or_else(|| self.short.clone())
+    }
+}
+
 /// What a diff compares: the worktree (as `git status` sees it), two commits,
 /// or one commit against the working tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +280,21 @@ impl Repo {
         let mut args = vec!["diff", "--name-status", "-z", "-M"];
         args.extend_from_slice(commits);
         Ok(parse_name_status(&self.git(&args)?))
+    }
+
+    /// Revisions for the picker: up to `limit` commits across all refs, newest
+    /// first, with their decorations.
+    pub fn revisions(&self, limit: usize) -> Result<Vec<Revision>> {
+        let limit = limit.to_string();
+        let out = self.git(&[
+            "log",
+            "--all",
+            "--date-order",
+            "-n",
+            &limit,
+            "--format=%H%x1f%h%x1f%D%x1f%s",
+        ])?;
+        Ok(parse_revisions(&out))
     }
 
     /// `git show <spec>` (e.g. `:path` for the index, `HEAD:path` for HEAD).
@@ -474,6 +524,21 @@ fn parse_name_status(out: &str) -> Vec<FileEntry> {
         }
     }
     files
+}
+
+/// Parse `git log --format=%H%x1f%h%x1f%D%x1f%s` output.
+fn parse_revisions(out: &str) -> Vec<Revision> {
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\x1f');
+            Some(Revision {
+                commit: parts.next()?.to_string(),
+                short: parts.next()?.to_string(),
+                refs: parts.next().unwrap_or("").to_string(),
+                subject: parts.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -782,6 +847,61 @@ mod tests {
         assert!(err.to_string().contains("unknown revision"), "{err}");
         let err = repo.comparison("v1...no-such-rev").unwrap_err();
         assert!(err.to_string().contains("unknown revision"), "{err}");
+    }
+
+    #[test]
+    fn parses_log_lines_into_revisions() {
+        let out = "aaa\x1faaa\x1fHEAD -> main, tag: v1\x1fFirst\n\
+                   bbb\x1fbbb\x1f\x1fSecond\n";
+        let revisions = parse_revisions(out);
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].subject, "First");
+        // A tag is the best label; without refs the short commit is used.
+        assert_eq!(revisions[0].label(), "v1");
+        assert_eq!(revisions[1].refs, "");
+        assert_eq!(revisions[1].label(), "bbb");
+    }
+
+    #[test]
+    fn revision_labels_prefer_tags_then_branches() {
+        let label = |refs: &str| {
+            Revision {
+                commit: "abc".into(),
+                short: "abc1234".into(),
+                refs: refs.into(),
+                subject: String::new(),
+            }
+            .label()
+        };
+        assert_eq!(label("HEAD -> main, tag: v1, origin/main"), "v1");
+        assert_eq!(label("HEAD -> feature/x, origin/feature/x"), "feature/x");
+        assert_eq!(label("main, origin/main"), "main");
+        assert_eq!(label("HEAD"), "abc1234");
+        assert_eq!(label(""), "abc1234");
+    }
+
+    #[test]
+    fn revisions_are_newest_first_with_their_refs() {
+        let sandbox = Sandbox::new("revisions");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.tag("v1");
+        sandbox.write("a.txt", "two\n");
+        sandbox.commit("second");
+
+        let repo = sandbox.repo();
+        let revisions = repo.revisions(10).unwrap();
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].subject, "second");
+        assert_eq!(revisions[1].subject, "first");
+        assert_eq!(revisions[1].label(), "v1");
+        assert!(
+            revisions[0].refs.contains("HEAD -> main"),
+            "refs: {:?}",
+            revisions[0].refs
+        );
+        // The limit keeps the newest commits.
+        assert_eq!(repo.revisions(1).unwrap().len(), 1);
     }
 
     #[test]
