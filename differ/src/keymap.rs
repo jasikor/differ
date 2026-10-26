@@ -120,6 +120,8 @@ impl Keymap {
             two(' ', 'e', Command::ToggleFiles),
             two(' ', 'n', Command::NextFile),
             two(' ', 'p', Command::PrevFile),
+            // Space v compares revisions (the worktree is the default).
+            two(' ', 'v', Command::CompareRevisions),
             // ? opens the full-screen key help.
             one(Char('?'), Command::Help),
             // s jumps to a visible character (flash-style).
@@ -396,13 +398,23 @@ mod tests {
         let mut km = Keymap::default_bindings();
         assert_eq!(km.feed(plain(' ')), Resolution::Pending);
         let keys: Vec<String> = km.continuations().iter().map(|(k, _)| k.label()).collect();
-        for k in ["e", "n", "p"] {
+        for k in ["e", "n", "p", "v"] {
             assert!(keys.contains(&k.to_string()), "missing {k} in {keys:?}");
         }
-        assert_eq!(keys.len(), 3);
+        assert_eq!(keys.len(), 4);
         let hint = km.hint();
         assert!(hint.starts_with("Space: "), "hint: {hint}");
         assert!(hint.contains("toggle file panel"), "hint: {hint}");
+    }
+
+    #[test]
+    fn space_v_starts_the_revision_prompt() {
+        let mut km = Keymap::default_bindings();
+        assert_eq!(km.feed(plain(' ')), Resolution::Pending);
+        assert_eq!(
+            km.feed(plain('v')),
+            Resolution::Run(Command::CompareRevisions)
+        );
     }
 
     #[test]

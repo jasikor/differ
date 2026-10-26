@@ -10,7 +10,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use differ_core::git::{FileEntry, Repo};
+use differ_core::git::{Comparison, FileEntry, Repo};
 use differ_core::model;
 use differ_core::tree;
 
@@ -191,13 +191,18 @@ fn build_repo(options: &Options) -> Result<(Vec<Diff>, String), String> {
 
     let mut diffs = Vec::new();
     for entry in &entries {
-        diffs.push(read_entry(&repo, entry, options.max_rows));
+        diffs.push(read_entry(
+            &repo,
+            &Comparison::Worktree,
+            entry,
+            options.max_rows,
+        ));
     }
     Ok((diffs, repo.root().display().to_string()))
 }
 
-fn read_entry(repo: &Repo, entry: &FileEntry, max_rows: usize) -> Diff {
-    let (old_label, new_label) = render::side_labels(entry);
+fn read_entry(repo: &Repo, comparison: &Comparison, entry: &FileEntry, max_rows: usize) -> Diff {
+    let (old_label, new_label) = render::side_labels(comparison, entry);
     let mut diff = Diff {
         path: entry.path.clone(),
         old_label,
@@ -205,7 +210,7 @@ fn read_entry(repo: &Repo, entry: &FileEntry, max_rows: usize) -> Diff {
         rows: Vec::new(),
         note: None,
     };
-    match repo.before_after(entry) {
+    match repo.before_after(comparison, entry) {
         Ok((old, new)) => {
             let rows = model::diff_rows(&old, &new);
             if rows.len() > max_rows {

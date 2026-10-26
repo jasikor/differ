@@ -20,10 +20,18 @@ pub struct Diff {
     pub note: Option<String>,
 }
 
-/// What the two sides mean for a `git status` entry, e.g. `HEAD` / `index`.
-pub fn side_labels(entry: &differ_core::git::FileEntry) -> (String, String) {
-    let staged = entry.staged;
-    let unstaged = entry.unstaged;
+/// What the two sides mean: the two revisions for a range, or `git status`'s
+/// HEAD / index / worktree for a worktree entry.
+pub fn side_labels(
+    comparison: &differ_core::git::Comparison,
+    entry: &differ_core::git::FileEntry,
+) -> (String, String) {
+    if let Some(labels) = comparison.side_labels() {
+        return labels;
+    }
+    let differ_core::git::Status::Worktree { staged, unstaged } = entry.status else {
+        return (String::new(), String::new());
+    };
     if let Some(y) = unstaged {
         match y {
             '?' => ("(new file)".into(), "working tree".into()),

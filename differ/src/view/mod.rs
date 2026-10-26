@@ -125,9 +125,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .and_then(|r| r.root().file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // A revision comparison names itself next to the repo; the worktree view
+    // (the default) has nothing extra to say.
+    let range = match app.comparison {
+        crate::git::Comparison::Worktree => None,
+        ref other => Some(other.label()),
+    };
     if app.show_files {
+        let suffix = range
+            .as_ref()
+            .map(|label| format!("  {label}"))
+            .unwrap_or_default();
         f.render_widget(
-            Paragraph::new(format!(" {repo_name}")).style(files_style),
+            Paragraph::new(format!(" {repo_name}{suffix}")).style(files_style),
             files_head,
         );
         files::draw(
@@ -139,13 +149,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // A direct file comparison shows the paths; a repo diff names the sides.
-    let (old_title, new_title) = match app.pair.as_ref() {
-        Some((old, new)) => (
+    // A direct file comparison shows the paths; a revision comparison names the
+    // two revs; the worktree view just says which side is which.
+    let (old_title, new_title) = match (&app.pair, app.comparison.side_labels()) {
+        (Some((old, new)), _) => (
             format!(" old  {}", old.display()),
             format!(" new  {}", new.display()),
         ),
-        None => (" old".to_string(), " new".to_string()),
+        (None, Some((old, new))) => (format!(" old  {old}"), format!(" new  {new}")),
+        (None, None) => (" old".to_string(), " new".to_string()),
     };
     f.render_widget(Paragraph::new(old_title).style(old_style), old_head);
     f.render_widget(
@@ -441,6 +453,16 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
         let col = 1 + pattern.chars().count();
         return (text, Some(col as u16));
     }
+    // The revision prompt is the other command-line-style input. A rejected
+    // spec leaves the prompt open, so its message is shown beside it.
+    if let Some(input) = app.range_text() {
+        let mut text = format!("revs: {input}");
+        if !app.message.is_empty() {
+            text.push_str(&format!("   {}", app.message));
+        }
+        let col = "revs: ".chars().count() + input.chars().count();
+        return (text, Some(col as u16));
+    }
     // which-key: while a prefix is pending, show just that prefix's options.
     if !app.key_hint.is_empty() {
         return (format!(" {}", app.key_hint), None);
@@ -472,7 +494,12 @@ fn help_line(app: &App, old_total: usize) -> (String, Option<u16>) {
     } else {
         format!("{}   ", app.message)
     };
-    let text = format!(" {path}  {pct}% ({cur}/{old_total})  [{focus}]   {msg}? help   q quit");
+    let range = match app.comparison {
+        crate::git::Comparison::Worktree => String::new(),
+        ref other => format!("  [{}]", other.label()),
+    };
+    let text =
+        format!(" {path}  {pct}% ({cur}/{old_total})  [{focus}]{range}   {msg}? help   q quit");
     (text, None)
 }
 
@@ -620,6 +647,43 @@ mod tests {
         let top: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(top.contains("old  old.txt"), "header: {top:?}");
         assert!(top.contains("new  new.txt"), "header: {top:?}");
+    }
+
+    #[test]
+    fn revision_comparisons_name_both_sides_and_the_status_line() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.show_files = false;
+        app.comparison = crate::git::Comparison::Revs {
+            from: crate::git::Rev {
+                commit: "1a2b3c4d5e6".into(),
+                label: "v0.2.0".into(),
+            },
+            to: crate::git::Rev {
+                commit: "9f8e7d6c5b4".into(),
+                label: "HEAD".into(),
+            },
+        };
+        let mut term = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let top: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(top.contains("old  v0.2.0 (1a2b3c4)"), "header: {top:?}");
+        assert!(top.contains("new  HEAD (9f8e7d6)"), "header: {top:?}");
+
+        let (line, _) = help_line(&app, 1);
+        assert!(line.contains("[v0.2.0..HEAD]"), "status: {line:?}");
+    }
+
+    #[test]
+    fn the_revision_prompt_takes_the_help_line_with_a_caret() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.start_range_prompt();
+        app.range_key(KeyCode::Char('v'));
+        let (text, caret) = help_line(&app, 1);
+        assert_eq!(text, "revs: v");
+        // The caret sits just past the typed spec ("revs: " is 6 columns).
+        assert_eq!(caret, Some(7));
     }
 
     #[test]

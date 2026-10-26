@@ -72,6 +72,8 @@ pub enum Command {
     GotoReferences,
     /// Return from a symbol jump.
     Back,
+    /// Open the revision prompt (`A..B`, `A...B`, or `A` vs the worktree).
+    CompareRevisions,
     /// Select the next / previous file, whatever has focus.
     NextFile,
     PrevFile,
@@ -119,6 +121,7 @@ impl Command {
             Command::GotoDefinition => app.goto_definition(),
             Command::GotoReferences => app.goto_references(),
             Command::Back => app.go_back(),
+            Command::CompareRevisions => app.start_range_prompt(),
             Command::NextFile => app.next_file(),
             Command::PrevFile => app.prev_file(),
             Command::Help => app.toggle_help(),
@@ -166,6 +169,7 @@ impl Command {
             Command::GotoDefinition => "go to definition",
             Command::GotoReferences => "go to references",
             Command::Back => "back",
+            Command::CompareRevisions => "compare revisions",
             Command::NextFile => "next file",
             Command::PrevFile => "previous file",
             Command::Help => "help",

@@ -132,6 +132,13 @@ pub struct App {
     /// Two files from the command line, compared directly (no git). When set,
     /// there is no file list and `files` stays empty.
     pub pair: Option<(PathBuf, PathBuf)>,
+    /// What the diff compares: the worktree by default, or revisions.
+    pub comparison: git::Comparison,
+    /// The spec the user typed for `comparison` (empty for the worktree view),
+    /// so the prompt can reopen with it.
+    pub range_spec: String,
+    /// The revision prompt's text while it is open.
+    range_input: Option<String>,
     pub files: Vec<git::FileEntry>,
     /// Sidebar rows (directories + files) built from `files`, and the row each
     /// file occupies so movement can skip the directory labels.
@@ -220,11 +227,26 @@ impl App {
         app
     }
 
+    /// Browse a repository at a revision range (`A..B`, `A...B` or `A`).
+    /// Fails before any terminal work if the repo or the spec is unusable.
+    pub fn with_range(start: Option<&Path>, spec: &str) -> Result<Self, String> {
+        let repo = Repo::discover_in(start).map_err(|e| format!("not a git repository: {e}"))?;
+        let mut app = App::blank();
+        app.comparison = repo.comparison(spec).map_err(|e| e.to_string())?;
+        app.range_spec = spec.trim().to_string();
+        app.repo = Some(repo);
+        app.refresh();
+        Ok(app)
+    }
+
     /// All fields at their defaults, before any source is loaded.
     fn blank() -> Self {
         App {
             repo: None,
             pair: None,
+            comparison: git::Comparison::Worktree,
+            range_spec: String::new(),
+            range_input: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -272,8 +294,22 @@ impl App {
             self.load_diff();
             return;
         }
-        let Some(repo) = &self.repo else { return };
-        match repo.status() {
+        // `load_diff` clears the message, so a file-list error has to be put
+        // back after it rather than being reported before.
+        let error = self.reload_files().err();
+        self.load_diff();
+        if let Some(error) = error {
+            self.message = error;
+        }
+    }
+
+    /// Re-read the file list for the active comparison, keeping the selection
+    /// inside it.
+    fn reload_files(&mut self) -> Result<(), String> {
+        let Some(repo) = &self.repo else {
+            return Ok(());
+        };
+        match repo.changes(&self.comparison) {
             Ok(mut files) => {
                 // Sidebar order: subdirectories before files, recursively.
                 tree::order(&mut files);
@@ -282,16 +318,83 @@ impl App {
                     self.selected = self.files.len().saturating_sub(1);
                 }
             }
-            Err(e) => self.message = format!("status: {e}"),
+            Err(e) => {
+                self.rebuild_tree();
+                return Err(e.to_string());
+            }
         }
         self.rebuild_tree();
-        self.load_diff();
+        Ok(())
     }
 
     fn rebuild_tree(&mut self) {
         let (rows, file_row) = tree::build(&self.files);
         self.tree = rows;
         self.file_row = file_row;
+    }
+
+    // ---- comparing revisions ----
+
+    /// Open the revision prompt, prefilled with the active range.
+    pub fn start_range_prompt(&mut self) {
+        self.message.clear();
+        self.range_input = Some(self.range_spec.clone());
+    }
+
+    /// The revision prompt's text while it is open.
+    pub fn range_text(&self) -> Option<&str> {
+        self.range_input.as_deref()
+    }
+
+    /// Feed a key to the revision prompt: `Enter` applies the spec, `Esc`
+    /// cancels, and anything that is not text is ignored.
+    pub fn range_key(&mut self, code: KeyCode) {
+        let Some(mut text) = self.range_input.take() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => self.apply_range(&text),
+            KeyCode::Backspace => {
+                text.pop();
+                self.range_input = Some(text);
+            }
+            KeyCode::Char(c) => {
+                text.push(c);
+                self.range_input = Some(text);
+            }
+            _ => self.range_input = Some(text),
+        }
+    }
+
+    /// Apply a revision spec; empty returns to the worktree view. A spec that
+    /// does not resolve leaves the prompt open and changes nothing.
+    fn apply_range(&mut self, spec: &str) {
+        let Some(repo) = self.repo.clone() else {
+            self.message = "no repository to compare revisions in".to_string();
+            return;
+        };
+        match repo.comparison(spec) {
+            Ok(comparison) => {
+                self.comparison = comparison;
+                self.range_spec = spec.trim().to_string();
+                // The file list and the saved positions belong to the old range.
+                self.pair = None;
+                self.show_files = true;
+                self.selected = 0;
+                self.file_scroll = 0;
+                self.view_state.clear();
+                self.message.clear();
+                self.refresh();
+                if self.message.is_empty() && self.files.is_empty() {
+                    self.message = format!("no changes in {}", self.comparison.label());
+                }
+            }
+            Err(e) => {
+                self.message = e.to_string();
+                self.range_input = Some(spec.to_string());
+            }
+        }
     }
 
     pub fn selected_path(&self) -> Option<&str> {
@@ -1459,15 +1562,8 @@ impl App {
         } else {
             self.pair = None;
             self.show_files = point.show_files;
-            if let Some(repo) = self.repo.clone() {
-                match repo.status() {
-                    Ok(mut files) => {
-                        tree::order(&mut files);
-                        self.files = files;
-                    }
-                    Err(e) => self.message = format!("status: {e}"),
-                }
-                self.rebuild_tree();
+            if self.repo.is_some() {
+                let _ = self.reload_files();
                 if let Some(path) = &point.selected_path {
                     if let Some(index) = self.files.iter().position(|file| &file.path == path) {
                         self.selected = index;
@@ -1696,7 +1792,7 @@ impl App {
         } else {
             let Some(repo) = &self.repo else { return };
             let entry = &self.files[self.selected];
-            match repo.before_after(entry) {
+            match repo.before_after(&self.comparison, entry) {
                 Ok((old, new)) => self.set_rows(&old, &new),
                 Err(e) => self.message = format!("diff: {e}"),
             }
@@ -2093,6 +2189,9 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
     App {
         repo: None,
         pair: None,
+        comparison: git::Comparison::Worktree,
+        range_spec: String::new(),
+        range_input: None,
         files: Vec::new(),
         tree: Vec::new(),
         file_row: Vec::new(),
@@ -2143,6 +2242,9 @@ mod tests {
         App {
             repo: None,
             pair: None,
+            comparison: git::Comparison::Worktree,
+            range_spec: String::new(),
+            range_input: None,
             files: Vec::new(),
             tree: Vec::new(),
             file_row: Vec::new(),
@@ -2448,21 +2550,9 @@ mod tests {
     fn next_and_prev_file_move_the_selection_from_any_focus() {
         let mut app = app_with(vec![DiffRow::Ctx("ctx".into())], 10);
         app.files = vec![
-            git::FileEntry {
-                path: "a.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
-            git::FileEntry {
-                path: "b.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
-            git::FileEntry {
-                path: "c.txt".into(),
-                staged: None,
-                unstaged: Some('M'),
-            },
+            git::FileEntry::worktree("a.txt", None, Some('M')),
+            git::FileEntry::worktree("b.txt", None, Some('M')),
+            git::FileEntry::worktree("c.txt", None, Some('M')),
         ];
         app.file_row = vec![0, 1, 2];
         app.selected = 0;
@@ -3127,5 +3217,163 @@ mod tests {
         assert!(!app.show_files);
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ---- comparing revisions ----
+
+    /// A throwaway repo with a deterministic identity.
+    struct Sandbox {
+        dir: PathBuf,
+    }
+
+    impl Sandbox {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("differ-app-{}-{name}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            let sandbox = Sandbox { dir };
+            sandbox.git(&["init", "-q", "-b", "main"]);
+            sandbox.git(&["config", "user.email", "differ@example.com"]);
+            sandbox.git(&["config", "user.name", "differ tests"]);
+            sandbox.git(&["config", "commit.gpgsign", "false"]);
+            sandbox
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(&self.dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        }
+
+        fn write(&self, path: &str, text: &str) {
+            let path = self.dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        fn commit(&self, message: &str) {
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "-q", "-m", message]);
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn the_revision_prompt_edits_and_cancels() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.start_range_prompt();
+        assert_eq!(app.range_text(), Some(""));
+        for c in ['v', '1', 'x'] {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Backspace);
+        assert_eq!(app.range_text(), Some("v1"));
+        app.range_key(KeyCode::Esc);
+        assert_eq!(app.range_text(), None);
+        // Nothing changed.
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+        assert_eq!(app.range_spec, "");
+    }
+
+    #[test]
+    fn the_prompt_prefills_the_active_range() {
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.range_spec = "v1..HEAD".into();
+        app.start_range_prompt();
+        assert_eq!(app.range_text(), Some("v1..HEAD"));
+    }
+
+    #[test]
+    fn a_range_is_applied_from_the_prompt_and_cleared_again() {
+        let sandbox = Sandbox::new("range");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.write("b.txt", "new\n");
+        sandbox.commit("second");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        // The worktree is clean, so the default view has no files.
+        assert!(app.files.is_empty());
+
+        app.start_range_prompt();
+        for c in "v1..HEAD".chars() {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.comparison.label(), "v1..HEAD");
+        assert_eq!(app.range_spec, "v1..HEAD");
+        assert_eq!(app.files.len(), 2);
+        // The visible diff comes from the range, not the worktree.
+        assert!(app
+            .rows
+            .iter()
+            .any(|row| matches!(row, DiffRow::Ins(text) if text == "two")));
+
+        // An empty spec returns to the worktree view.
+        app.start_range_prompt();
+        let len = app.range_text().unwrap().chars().count();
+        for _ in 0..len {
+            app.range_key(KeyCode::Backspace);
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+        assert_eq!(app.range_spec, "");
+        assert!(app.files.is_empty());
+    }
+
+    #[test]
+    fn a_bad_spec_keeps_the_prompt_open() {
+        let sandbox = Sandbox::new("bad-spec");
+        sandbox.write("a.txt", "a\n");
+        sandbox.commit("first");
+
+        let mut app = App::new(Some(&sandbox.dir));
+        app.start_range_prompt();
+        for c in "nope".chars() {
+            app.range_key(KeyCode::Char(c));
+        }
+        app.range_key(KeyCode::Enter);
+        assert_eq!(app.range_text(), Some("nope"));
+        assert!(
+            app.message.contains("unknown revision: nope"),
+            "msg: {}",
+            app.message
+        );
+        assert_eq!(app.comparison, git::Comparison::Worktree);
+
+        app.range_key(KeyCode::Esc);
+        assert_eq!(app.range_text(), None);
+    }
+
+    #[test]
+    fn with_range_starts_in_that_comparison() {
+        let sandbox = Sandbox::new("with-range");
+        sandbox.write("a.txt", "one\n");
+        sandbox.commit("first");
+        sandbox.git(&["tag", "v1"]);
+        sandbox.write("a.txt", "one\ntwo\n");
+        sandbox.commit("second");
+
+        let app = App::with_range(Some(&sandbox.dir), "v1..HEAD").unwrap();
+        assert!(matches!(app.comparison, git::Comparison::Revs { .. }));
+        assert_eq!(app.range_spec, "v1..HEAD");
+        assert_eq!(app.files.len(), 1);
+        assert!(App::with_range(Some(&sandbox.dir), "nope").is_err());
     }
 }
