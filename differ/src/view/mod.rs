@@ -110,6 +110,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let [files_head, files_body] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(files_area);
+    // The file list is shorter than the diff panes (the versions panel takes the
+    // bottom of the left column), so it scrolls by its own body height. Keep the
+    // selected row in view even when the panel or terminal was just resized.
+    if app.show_left {
+        app.file_viewport = files_body.height.max(1) as usize;
+        app.ensure_file_visible();
+    }
     let [_, old_ruler_body] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(old_ruler);
     let [old_head, old_body] =
@@ -947,6 +954,42 @@ mod tests {
         app.focus = Focus::Old;
         let (line, _) = help_line(&app, 1);
         assert!(!line.contains("m mark base"), "status: {line:?}");
+    }
+
+    #[test]
+    fn a_long_file_list_scrolls_to_keep_the_selection_visible() {
+        // 30 files, but the left column shows only about seven of them above the
+        // versions panel. The selection must stay on screen.
+        let mut app = test_app(vec![DiffRow::Ctx("x".into())], 5);
+        app.files = (0..30)
+            .map(|i| crate::git::FileEntry::worktree(format!("file-{i:02}.txt"), None, Some('M')))
+            .collect();
+        let (tree, file_row) = crate::tree::build(&app.files);
+        app.tree = tree;
+        app.file_row = file_row;
+        app.selected = 29;
+        app.focus = Focus::Files;
+
+        let left_text = |buf: &ratatui::buffer::Buffer| -> String {
+            let width = buf.area.width.min(46);
+            (0..buf.area.height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .map(|(x, y)| buf[(x, y)].symbol().to_string())
+                .collect()
+        };
+
+        let mut term = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let text = left_text(term.backend().buffer());
+        assert!(text.contains("file-29.txt"), "selection visible: {text}");
+        assert!(!text.contains("file-00.txt"), "the list scrolled: {text}");
+
+        // Shrinking the terminal re-clamps the scroll instead of hiding the
+        // selection until the next keypress.
+        let mut term = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let text = left_text(term.backend().buffer());
+        assert!(text.contains("file-29.txt"), "visible after resize: {text}");
     }
 
     #[test]

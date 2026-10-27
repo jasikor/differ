@@ -144,6 +144,9 @@ pub struct App {
     pub file_row: Vec<usize>,
     pub selected: usize,
     pub file_scroll: u16,
+    /// File list body height, refreshed by the view each frame. The versions
+    /// panel takes part of the left column, so this is shorter than `viewport`.
+    pub file_viewport: usize,
     pub rows: Vec<DiffRow>,
     /// Top old line visible.
     pub old_top: usize,
@@ -258,6 +261,7 @@ impl App {
             file_row: Vec::new(),
             selected: 0,
             file_scroll: 0,
+            file_viewport: 1,
             rows: Vec::new(),
             old_top: 0,
             new_top: 0,
@@ -608,11 +612,20 @@ impl App {
     }
 
     pub fn page_down(&mut self) {
-        self.step(self.viewport.max(1) as isize);
+        self.step(self.page_height() as isize);
     }
 
     pub fn page_up(&mut self) {
-        self.step(-(self.viewport.max(1) as isize));
+        self.step(-(self.page_height() as isize));
+    }
+
+    /// Lines a page covers in the focused region: the file list is shorter than
+    /// the diff panes, so it pages by its own height.
+    fn page_height(&self) -> usize {
+        match self.focus {
+            Focus::Files => self.file_viewport.max(1),
+            _ => self.viewport.max(1),
+        }
     }
 
     fn step(&mut self, n: isize) {
@@ -1894,14 +1907,21 @@ impl App {
         self.move_selection(-1);
     }
 
-    fn ensure_file_visible(&mut self) {
-        let vp = self.viewport.max(1);
+    /// Scroll the file list only as far as needed to show the selected row.
+    /// The view refreshes `file_viewport` and calls this every frame, so a
+    /// resize, zoom or panel toggle cannot leave the selection off screen.
+    pub(crate) fn ensure_file_visible(&mut self) {
+        let vp = self.file_viewport.max(1);
         let row = self.file_row.get(self.selected).copied().unwrap_or(0);
         if row < self.file_scroll as usize {
             self.file_scroll = row as u16;
         } else if row >= self.file_scroll as usize + vp {
             self.file_scroll = (row + 1 - vp) as u16;
         }
+        // Keep the tail reachable when the list is shorter than the panel.
+        self.file_scroll = self
+            .file_scroll
+            .min(self.tree.len().saturating_sub(vp) as u16);
     }
 
     // ---- hunks ----
@@ -2435,6 +2455,7 @@ pub(crate) fn test_app(rows: Vec<DiffRow>, viewport: usize) -> App {
         file_row: Vec::new(),
         selected: 0,
         file_scroll: 0,
+        file_viewport: 1,
         rows,
         old_top: 0,
         new_top: 0,
@@ -2493,6 +2514,7 @@ mod tests {
             file_row: Vec::new(),
             selected: 0,
             file_scroll: 0,
+            file_viewport: 1,
             rows,
             old_top: 0,
             new_top: 0,
@@ -2948,6 +2970,45 @@ mod tests {
         assert_eq!(app.selected, 0);
         // The focus is left alone.
         assert_eq!(app.focus, Focus::Old);
+    }
+
+    #[test]
+    fn the_file_list_scrolls_by_its_own_height() {
+        // The diff panes are 40 lines tall, but the file list only shows four:
+        // it must scroll with its own height, not the panes'.
+        let mut app = app_with(vec![DiffRow::Ctx("ctx".into())], 40);
+        app.files = (0..10)
+            .map(|i| git::FileEntry::worktree(format!("f{i}.txt"), None, Some('M')))
+            .collect();
+        app.rebuild_tree();
+        app.focus = Focus::Files;
+        app.file_viewport = 4;
+
+        for _ in 0..4 {
+            app.down();
+        }
+        // Rows 0..3 fit, so reaching row 4 scrolls by one.
+        assert_eq!(app.selected, 4);
+        assert_eq!(app.file_scroll, 1);
+        // The next step scrolls with the selection.
+        app.down();
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.file_scroll, 2);
+
+        // Coming back up brings the selection to the top of the window.
+        app.bottom();
+        assert_eq!(app.file_scroll, 6);
+        for _ in 0..4 {
+            app.up();
+        }
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.file_scroll, 5);
+
+        // Paging steps by the list height, not the taller diff viewport.
+        app.selected = 0;
+        app.file_scroll = 0;
+        app.page_down();
+        assert_eq!(app.selected, 4);
     }
 
     #[test]
